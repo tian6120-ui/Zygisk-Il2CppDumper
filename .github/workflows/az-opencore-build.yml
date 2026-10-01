@@ -1,0 +1,72 @@
+name: AZ OpenCore Build
+
+on:
+  push:
+    branches: [az-opencore-build]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-latest
+    timeout-minutes: 60
+    steps:
+      - name: Checkout AZ patch repo
+        uses: actions/checkout@v4
+        with:
+          ref: az-opencore-build
+
+      - name: Clone upstream Il2CppTool
+        shell: pwsh
+        run: git clone --depth 1 https://github.com/2228293026/Il2CppTool.git Il2CppTool
+
+      - name: Apply AZ source patch
+        shell: pwsh
+        run: python az/patch_az.py Il2CppTool
+
+      - name: Resolve Android NDK
+        shell: pwsh
+        run: |
+          $candidates = @()
+          foreach ($envName in 'ANDROID_NDK_HOME', 'ANDROID_NDK_ROOT') {
+            $value = [Environment]::GetEnvironmentVariable($envName)
+            if ($value) { $candidates += $value }
+          }
+          if (-not $candidates) {
+            $sdk = @($env:ANDROID_HOME, $env:ANDROID_SDK_ROOT) |
+              Where-Object { $_ } | Select-Object -First 1
+            if ($sdk) {
+              $ndkRoot = Join-Path $sdk 'ndk'
+              if (Test-Path $ndkRoot) {
+                $candidates += Get-ChildItem $ndkRoot -Directory |
+                  Sort-Object Name -Descending | ForEach-Object { $_.FullName }
+              }
+            }
+          }
+          $ndk = $candidates |
+            Where-Object { $_ -and (Test-Path (Join-Path $_ 'ndk-build.cmd')) } |
+            Select-Object -First 1
+          if (-not $ndk) { throw "No Android NDK found" }
+          Write-Host "Using NDK: $ndk"
+          "ANDROID_NDK_HOME=$ndk" >> $env:GITHUB_ENV
+
+      - name: Build AZ arm64 native core
+        shell: pwsh
+        working-directory: Il2CppTool
+        run: .\build.ps1
+
+      - name: Verify binary
+        shell: pwsh
+        run: |
+          $so = 'Il2CppTool/app/src/main/libs/arm64-v8a/libIl2CppTool.so'
+          if (-not (Test-Path $so)) { throw "Missing: $so" }
+          $size = (Get-Item $so).Length
+          Write-Host "AZ libIl2CppTool.so = $size bytes"
+          if ($size -lt 1000000) { throw "Binary unexpectedly small" }
+          Get-FileHash $so -Algorithm SHA256
+
+      - name: Upload AZ native artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: AZ-OpenCore-arm64
+          path: Il2CppTool/app/src/main/libs/arm64-v8a/libIl2CppTool.so
+          if-no-files-found: error
