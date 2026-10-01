@@ -108,3 +108,124 @@ if anchor in m:
 
 menu.write_text(m, encoding="utf-8")
 print("AZ OpenCore v0.4 diagnostic patch applied")
+
+# V0.5: prove whether the translated ARM eglSwapBuffers hook is actually on the
+# game's render path, then expose each setup milestone at INFO level.
+m = menu.read_text(encoding="utf-8")
+m = m.replace(
+'''void setupMenu()
+{
+    if (isInitialized || g_initState == INIT_FAILED)
+        return;
+''',
+'''void setupMenu()
+{
+    static int azSetupCalls = 0;
+    ++azSetupCalls;
+    if (azSetupCalls <= 3)
+        LOGI("[AZOC05] setupMenu call=%d initState=%d initialized=%d", azSetupCalls, g_initState, isInitialized ? 1 : 0);
+    if (isInitialized || g_initState == INIT_FAILED)
+        return;
+''', 1)
+
+m = m.replace(
+'''        auto ctx = ImGui::CreateContext();
+        if (!ctx)
+''',
+'''        LOGI("[AZOC05] creating ImGui context");
+        auto ctx = ImGui::CreateContext();
+        LOGI("[AZOC05] ImGui context=%p", (void*)ctx);
+        if (!ctx)
+''', 1)
+
+m = m.replace(
+'''    if (!ImGui_ImplAndroid_Init())
+    {
+''',
+'''    LOGI("[AZOC05] ImGui_ImplAndroid_Init begin");
+    if (!ImGui_ImplAndroid_Init())
+    {
+''', 1)
+m = m.replace(
+'''    if (!ImGui_ImplOpenGL3_Init("#version 300 es"))
+    {
+''',
+'''    LOGI("[AZOC05] ImGui Android backend ready");
+    LOGI("[AZOC05] ImGui_ImplOpenGL3_Init begin");
+    if (!ImGui_ImplOpenGL3_Init("#version 300 es"))
+    {
+''', 1)
+m = m.replace(
+'''        ImGui::GetStyle().ScaleAllSizes(2);
+''',
+'''        LOGI("[AZOC05] ImGui OpenGL backend ready");
+        ImGui::GetStyle().ScaleAllSizes(2);
+''', 1)
+
+m = m.replace(
+'''    try
+    {
+        if (onInitAddr)
+            onInitAddr();
+''',
+'''    try
+    {
+        LOGI("[AZOC05] calling on_init state=%d", g_initState);
+        if (onInitAddr)
+            onInitAddr();
+        LOGI("[AZOC05] on_init returned state=%d", g_initState);
+''', 1)
+
+m = m.replace(
+'''EGLBoolean swapbuffers_hook(EGLDisplay dpy, EGLSurface surf)
+{
+''',
+'''EGLBoolean swapbuffers_hook(EGLDisplay dpy, EGLSurface surf)
+{
+    static unsigned long azSwapHits = 0;
+    ++azSwapHits;
+    if (azSwapHits <= 5)
+        LOGI("[AZOC05] swapbuffers_hook HIT #%lu dpy=%p surf=%p", azSwapHits, (void*)dpy, (void*)surf);
+''', 1)
+
+m = m.replace(
+'''    glWidth = w;
+    glHeight = h;
+''',
+'''    if (azSwapHits <= 5)
+        LOGI("[AZOC05] surface size=%dx%d", (int)w, (int)h);
+    glWidth = w;
+    glHeight = h;
+''', 1)
+
+menu.write_text(m, encoding="utf-8")
+
+main = root / "app/src/main/jni/Main.cpp"
+s = main.read_text(encoding="utf-8")
+s = s.replace(
+'''void on_init()
+{
+    LOGD(__FUNCTION__);
+''',
+'''void on_init()
+{
+    LOGI("[AZOC05] on_init ENTER");
+    LOGD(__FUNCTION__);
+''', 1)
+s = s.replace(
+'''    if (!isLibraryLoaded(targetLibName))
+    {
+        g_initState = INIT_PENDING;
+        return;
+    }
+''',
+'''    if (!isLibraryLoaded(targetLibName))
+    {
+        LOGI("[AZOC05] libil2cpp.so not visible yet");
+        g_initState = INIT_PENDING;
+        return;
+    }
+    LOGI("[AZOC05] libil2cpp.so visible");
+''', 1)
+main.write_text(s, encoding="utf-8")
+print("AZ OpenCore v0.5 render-path diagnostics applied")
