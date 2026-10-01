@@ -229,3 +229,91 @@ s = s.replace(
 ''', 1)
 main.write_text(s, encoding="utf-8")
 print("AZ OpenCore v0.5 render-path diagnostics applied")
+
+
+# V0.6 ARM64 side becomes a headless IL2CPP agent. Rendering now belongs to the
+# native x86_64 host renderer on translated MuMu, so the ARM guest must not wait
+# for an ARM eglSwapBuffers call that never happens.
+main = root / "app/src/main/jni/Main.cpp"
+s = main.read_text(encoding="utf-8")
+if '#include <atomic>' not in s:
+    s = s.replace('#include <thread>', '#include <thread>\n#include <atomic>', 1)
+
+start = s.find('void *hack_thread(void *)')
+end = s.find('// 在导出进行中时进程退出', start)
+if start == -1 or end == -1:
+    raise SystemExit("AZAG06 hack_thread anchors not found")
+
+agent = r'''static std::atomic<int> g_azAgentState{0};
+static std::atomic<int> g_azAgentImageCount{0};
+
+extern "C" __attribute__((visibility("default"))) int az_agent_ping()
+{
+    return g_azAgentState.load(std::memory_order_acquire);
+}
+
+extern "C" __attribute__((visibility("default"))) int az_agent_image_count()
+{
+    return g_azAgentImageCount.load(std::memory_order_acquire);
+}
+
+void *hack_thread(void *)
+{
+    logger::Clear();
+    LOGI("[AZAG06] ARM64 IL2CPP agent thread started");
+    g_azAgentState.store(1, std::memory_order_release);
+
+    bool libSeen = false;
+    for (int i = 0; i < 160; ++i)
+    {
+        if (isLibraryLoaded(targetLibName))
+        {
+            libSeen = true;
+            break;
+        }
+        if (i < 8 || (i % 20) == 0)
+            LOGI("[AZAG06] waiting libil2cpp attempt=%d", i + 1);
+        usleep(250000);
+    }
+
+    if (!libSeen)
+    {
+        LOGE("[AZAG06] libil2cpp.so not visible after timeout");
+        g_azAgentState.store(-1, std::memory_order_release);
+        return nullptr;
+    }
+
+    LOGI("[AZAG06] libil2cpp.so visible");
+
+    for (int i = 0; i < 160; ++i)
+    {
+        bool apiOk = Il2cpp::Init();
+        bool attachOk = apiOk && Il2cpp::EnsureAttached();
+        if (attachOk)
+        {
+            auto images = Il2cpp::GetImagesFresh();
+            g_azAgentImageCount.store((int)images.size(), std::memory_order_release);
+            g_azAgentState.store(2, std::memory_order_release);
+            LOGI("[AZAG06] IL2CPP READY images=%zu", images.size());
+
+            // Keep this translated ARM thread attached. Later bridge calls can
+            // use this worker as the serialized IL2CPP execution queue.
+            for (;;)
+                sleep(30);
+        }
+
+        if (i < 8 || (i % 20) == 0)
+            LOGI("[AZAG06] IL2CPP init pending attempt=%d api=%d attach=%d",
+                 i + 1, apiOk ? 1 : 0, attachOk ? 1 : 0);
+        usleep(250000);
+    }
+
+    LOGE("[AZAG06] IL2CPP agent init timed out");
+    g_azAgentState.store(-2, std::memory_order_release);
+    return nullptr;
+}
+
+'''
+s = s[:start] + agent + s[end:]
+main.write_text(s, encoding="utf-8")
+print("AZ OpenCore v0.6 ARM64 headless agent patch applied")
