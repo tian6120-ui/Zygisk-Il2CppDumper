@@ -1,0 +1,73 @@
+name: AZ x86_64 Renderer Build
+
+on:
+  push:
+    branches: [az-opencore-build]
+    paths:
+      - 'az/renderer/**'
+      - '.github/workflows/az-renderer-build.yml'
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-latest
+    timeout-minutes: 45
+    steps:
+      - name: Checkout AZ repo
+        uses: actions/checkout@v4
+        with:
+          ref: az-opencore-build
+
+      - name: Checkout ImGui/Dobby template
+        uses: actions/checkout@v4
+        with:
+          repository: fedes1to/Zygisk-ImGui-Menu
+          ref: main
+          path: thirdparty/Zygisk-ImGui-Menu
+          fetch-depth: 1
+
+      - name: Resolve Android NDK
+        shell: pwsh
+        run: |
+          $candidates = @()
+          foreach ($envName in 'ANDROID_NDK_HOME', 'ANDROID_NDK_ROOT') {
+            $value = [Environment]::GetEnvironmentVariable($envName)
+            if ($value) { $candidates += $value }
+          }
+          $sdk = @($env:ANDROID_HOME, $env:ANDROID_SDK_ROOT) | Where-Object { $_ } | Select-Object -First 1
+          if ($sdk) {
+            $ndkRoot = Join-Path $sdk 'ndk'
+            if (Test-Path $ndkRoot) {
+              $candidates += Get-ChildItem $ndkRoot -Directory |
+                Sort-Object Name -Descending | ForEach-Object { $_.FullName }
+            }
+          }
+          $ndk = $candidates | Where-Object { $_ -and (Test-Path (Join-Path $_ 'build\cmake\android.toolchain.cmake')) } | Select-Object -First 1
+          if (-not $ndk) { throw "No Android NDK found" }
+          Write-Host "Using NDK: $ndk"
+          "ANDROID_NDK_HOME=$ndk" >> $env:GITHUB_ENV
+
+      - name: Configure x86_64 renderer
+        shell: pwsh
+        run: |
+          $tp = (Resolve-Path 'thirdparty/Zygisk-ImGui-Menu').Path
+          cmake -S az/renderer -B build-renderer -G Ninja             -DCMAKE_TOOLCHAIN_FILE="$env:ANDROID_NDK_HOME/build/cmake/android.toolchain.cmake"             -DANDROID_ABI=x86_64             -DANDROID_PLATFORM=android-28             -DCMAKE_BUILD_TYPE=Release             -DTHIRDPARTY_ROOT="$tp"
+
+      - name: Build x86_64 renderer
+        shell: pwsh
+        run: cmake --build build-renderer --config Release --parallel 4
+
+      - name: Verify renderer
+        shell: pwsh
+        run: |
+          $so = 'build-renderer/libaz_renderer.so'
+          if (-not (Test-Path $so)) { throw "Missing renderer: $so" }
+          Write-Host "renderer bytes=$((Get-Item $so).Length)"
+          Get-FileHash $so -Algorithm SHA256
+
+      - name: Upload renderer artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: AZ-Renderer-x86_64
+          path: build-renderer/libaz_renderer.so
+          if-no-files-found: error
