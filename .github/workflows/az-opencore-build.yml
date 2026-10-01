@@ -15,9 +15,13 @@ jobs:
         with:
           ref: az-opencore-build
 
-      - name: Clone upstream Il2CppTool
-        shell: pwsh
-        run: git clone --depth 1 https://github.com/2228293026/Il2CppTool.git Il2CppTool
+      - name: Checkout upstream Il2CppTool
+        uses: actions/checkout@v4
+        with:
+          repository: 2228293026/Il2CppTool
+          ref: main
+          path: Il2CppTool
+          fetch-depth: 1
 
       - name: Apply AZ source patch
         shell: pwsh
