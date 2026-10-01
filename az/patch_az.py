@@ -15,6 +15,8 @@ s = s.replace('OBFUSCATE("https://m.bilibili.com/space/1757946676")',
 main.write_text(s, encoding="utf-8")
 
 m = menu.read_text(encoding="utf-8")
+if '#include <dlfcn.h>' not in m:
+    m = m.replace('#include <unistd.h>', '#include <unistd.h>\n#include <dlfcn.h>', 1)
 m = m.replace(
 '''void *initModMenu(void *menu_addr, void *on_init_addr, bool isJni)
 {
