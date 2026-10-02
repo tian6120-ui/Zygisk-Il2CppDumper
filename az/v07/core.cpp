@@ -8,6 +8,7 @@
 #include <string>
 #include "Il2cpp/Il2cpp.h"
 #include "Includes/Logger.h"
+#include "game_ui.h"
 
 extern "C" void az_lua_worker();
 
@@ -38,6 +39,7 @@ static void worker(){
  if(!ok){mark("script.status","IL2CPP_INIT_FAILED");return;}
  mark("agent.ready","AZ ScriptCore 0.7");
  mark("script.status","READY");
+ az_ui_activate();
  az_lua_worker();
 }
 
@@ -49,10 +51,10 @@ static void start_once(){
 }
 
 extern "C" __attribute__((visibility("default")))
-void SetTargetActivity(JNIEnv*, jobject){ start_once(); }
+void SetTargetActivity(JNIEnv* env, jobject ctx){ az_ui_set_context(env,ctx); start_once(); }
 
 extern "C" __attribute__((visibility("default")))
-jint JNI_OnLoad(JavaVM*, void*){ start_once(); return JNI_VERSION_1_6; }
+jint JNI_OnLoad(JavaVM* vm, void*){ az_ui_set_vm(vm); start_once(); return JNI_VERSION_1_6; }
 
 __attribute__((constructor))
 static void az_ctor(){ start_once(); }
