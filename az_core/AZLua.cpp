@@ -14,7 +14,11 @@
 
 #include "Il2cpp/Il2cpp.h"
 #include "Il2cpp/il2cpp-class.h"
+#include "Tool/Patcher.h"
+#include "Tool/Tool.h"
+#include "KittyMemory/KittyMemory.h"
 #include "imgui/imgui.h"
+#include <sys/mman.h>
 
 extern "C" {
 #include "Lua/lua.h"
@@ -92,6 +96,16 @@ lua_Integer tableIntegerField(lua_State* L, int idx, const char* key, lua_Intege
 std::string g_selectedScript;
 bool g_alertPending = false;
 std::string g_alertText;
+
+struct ReturnPatchRecord {
+    void* target{};
+    std::vector<uint8_t> original;
+    uint32_t rootedHandle{};
+};
+
+std::mutex g_patchMutex;
+std::unordered_map<uintptr_t, ReturnPatchRecord> g_returnPatches;
+
 
 char g_editor[64 * 1024] =
     "-- AZ Tool Lua 5.4.7\n"
