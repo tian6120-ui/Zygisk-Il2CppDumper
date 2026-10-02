@@ -41,6 +41,10 @@ struct Obj { Il2CppObject *raw{}; uint32_t handle{}; };
 struct Cls { Il2CppClass *klass{}; };
 struct HookRec { int id{}; MethodInfo *method{}; void *target{}; void *orig{}; };
 static lua_State *G=nullptr;
+static std::atomic<bool> g_stopRequested{false};
+static std::mutex g_runMetaMu;
+static std::string g_runningName;
+static long long g_runningStartMs=0;
 static std::mutex hookMu;
 static std::unordered_map<int,HookRec> hooks;
 static std::atomic<int> nextHook{1};
@@ -82,6 +86,23 @@ static void writeStatus(const char*state,const std::string&name="",long long sta
  std::string tmp=g_status+".tmp";
  writeText(tmp.c_str(),b);
  rename(tmp.c_str(),g_status.c_str());
+}
+
+static void luaStopHook(lua_State*L,lua_Debug*){
+ if(g_stopRequested.load(std::memory_order_relaxed))
+  luaL_error(L,"__AZ_STOP_REQUESTED__");
+}
+
+static void requestStop(){
+ g_stopRequested.store(true,std::memory_order_relaxed);
+ std::string name; long long start=0;
+ {
+  std::lock_guard<std::mutex>lk(g_runMetaMu);
+  name=g_runningName; start=g_runningStartMs;
+ }
+ long long elapsed=start>0?std::max(0LL,monoMs()-start):0;
+ writeStatus("STOPPING",name,start,elapsed,"stop requested");
+ logf("Stop requested | name=%s elapsed=%lldms",name.c_str(),elapsed);
 }
 static void out(const std::string&s){FILE*f=fopen(OUT(),"ab");if(!f)return;fwrite(s.data(),1,s.size(),f);fwrite("\n",1,1,f);fclose(f);}
 static void trace(const std::string&s){out("[TRACE] "+s);logf("TRACE %s",s.c_str());}
@@ -684,6 +705,11 @@ static const char* coreAbi(){
 #endif
 }
 static bool queueScriptOnUnityMain(const std::string&name){
+ g_stopRequested.store(false,std::memory_order_relaxed);
+ {
+  std::lock_guard<std::mutex>lk(g_runMetaMu);
+  g_runningName=name; g_runningStartMs=0;
+ }
  writeStatus("QUEUED",name,0,0,"");
  if(!waitMainDispatcher(5000)){
   logf("UnityMain script queue unavailable name=%s",name.c_str());
@@ -706,26 +732,56 @@ static bool queueScriptOnUnityMain(const std::string&name){
 static void run(const std::string&name){
  std::string f=safe(name)?g_base+"/"+name:g_base+"/script.lua";
  long long start=monoMs();
+ {
+  std::lock_guard<std::mutex>lk(g_runMetaMu);
+  g_runningName=name; g_runningStartMs=start;
+ }
+
+ if(g_stopRequested.load(std::memory_order_relaxed)){
+  out("[AZ ScriptCore] STOPPED before start");
+  writeStatus("STOPPED",name,start,0,"stopped by user");
+  g_stopRequested.store(false,std::memory_order_relaxed);
+  std::lock_guard<std::mutex>lk(g_runMetaMu);g_runningName.clear();g_runningStartMs=0;
+  return;
+ }
+
  writeStatus("RUNNING",name,start,0,"");
  writeText(OUT(),"[AZ ScriptCore V0.7] RUN | "+f+"\n");
  out("[ENV] package="+g_pkg+" | abi="+coreAbi()+" | images="+std::to_string(Il2cpp::GetImagesFresh().size())+" | gchandle="+(Il2cpp::GcHandleApiResolved()?"OK":"MISSING"));
  out("[API] Class.fromName | findObjectsFresh | Field | Call.exact/default | Hook | Array | gg");
  out("[OBJ] V7 ownership | userdata=raw+handle0 | call-result roots=external");
+ out("[CTRL] stop=enabled | cooperative Lua interrupt");
 
+ lua_sethook(G,luaStopHook,LUA_MASKCOUNT,2000);
  int rc=luaL_loadfile(G,f.c_str());
  if(rc==LUA_OK)rc=lua_pcall(G,0,LUA_MULTRET,0);
- long long elapsed=monoMs()-start;
+ lua_sethook(G,nullptr,0,0);
 
- if(rc!=LUA_OK){
-  const char*e=lua_tostring(G,-1);
-  std::string msg=e?e:"unknown";
+ long long elapsed=monoMs()-start;
+ bool stopped=g_stopRequested.load(std::memory_order_relaxed);
+ const char*err=(rc!=LUA_OK)?lua_tostring(G,-1):nullptr;
+ if(err&&strstr(err,"__AZ_STOP_REQUESTED__"))stopped=true;
+
+ if(stopped){
+  if(rc!=LUA_OK&&lua_gettop(G)>0)lua_pop(G,1);
+  char b[128];snprintf(b,sizeof(b),"[AZ ScriptCore] STOPPED | elapsed=%.3fs",elapsed/1000.0);
+  out(b);
+  writeStatus("STOPPED",name,start,elapsed,"stopped by user");
+ }else if(rc!=LUA_OK){
+  std::string msg=err?err:"unknown";
   out(std::string("ERROR | ")+msg);
-  lua_pop(G,1);
+  if(lua_gettop(G)>0)lua_pop(G,1);
   writeStatus("ERROR",name,start,elapsed,msg);
  }else{
   char b[128];snprintf(b,sizeof(b),"[AZ ScriptCore 0.7] DONE | elapsed=%.3fs",elapsed/1000.0);
   out(b);
   writeStatus("DONE",name,start,elapsed,"");
+ }
+
+ g_stopRequested.store(false,std::memory_order_relaxed);
+ {
+  std::lock_guard<std::mutex>lk(g_runMetaMu);
+  g_runningName.clear();g_runningStartMs=0;
  }
  lua_settop(G,0);
  lua_gc(G,LUA_GCCOLLECT,0);
@@ -733,3 +789,4 @@ static void run(const std::string&name){
 void worker(){ensureDir();writeStatus("INIT");G=luaL_newstate();if(!G){writeStatus("ERROR","",0,0,"Lua init failed");return;}luaL_openlibs(G);reg(G);installMainThreadBootstrap();writeStatus("READY");logf("Lua 5.4 READY | Class Call Hook Array gg | UnityMain bootstrap=%d",g_mainHookInstalled.load()?1:0);for(;;){if(access(REQ(),F_OK)==0){std::string q=readText(REQ(),512);unlink(REQ());while(!q.empty()&&(q.back()=='\n'||q.back()=='\r'||q.back()==' '||q.back()=='\t'))q.pop_back();if(!queueScriptOnUnityMain(q)){out("ERROR | UnityMain script dispatcher unavailable");}}usleep(100000);}}
 }
 extern "C" void az_lua_worker(){AZLua::worker();}
+extern "C" void az_lua_request_stop(){AZLua::requestStop();}
