@@ -58,6 +58,15 @@ static void ensureDir(){
 }
 static void writeText(const char *p,const std::string&s){FILE*f=fopen(p,"wb");if(!f)return;fwrite(s.data(),1,s.size(),f);fclose(f);}
 static std::string readText(const char*p,size_t lim=1048576){FILE*f=fopen(p,"rb");if(!f)return{};std::string s;char b[4096];while(!feof(f)&&s.size()<lim){size_t n=fread(b,1,sizeof(b),f);if(!n)break;if(s.size()+n>lim)n=lim-s.size();s.append(b,n);}fclose(f);return s;}
+static long long monoMs(){timespec t{};clock_gettime(CLOCK_MONOTONIC,&t);return (long long)t.tv_sec*1000LL+t.tv_nsec/1000000LL;}
+static void writeStatus(const char*state,const std::string&name="",long long startMs=0,long long elapsedMs=0,const std::string&msg=""){
+ char b[1024];
+ snprintf(b,sizeof(b),"state=%s\nname=%s\nstart_ms=%lld\nelapsed_ms=%lld\nmessage=%s\n",
+          state?state:"UNKNOWN",name.c_str(),startMs,elapsedMs,msg.c_str());
+ std::string tmp=g_status+".tmp";
+ writeText(tmp.c_str(),b);
+ rename(tmp.c_str(),g_status.c_str());
+}
 static void out(const std::string&s){FILE*f=fopen(OUT(),"ab");if(!f)return;fwrite(s.data(),1,s.size(),f);fwrite("\n",1,1,f);fclose(f);}
 static void trace(const std::string&s){out("[TRACE] "+s);logf("TRACE %s",s.c_str());}
 
@@ -643,8 +652,10 @@ static const char* coreAbi(){
 #endif
 }
 static bool queueScriptOnUnityMain(const std::string&name){
+ writeStatus("QUEUED",name,0,0,"");
  if(!waitMainDispatcher(5000)){
   logf("UnityMain script queue unavailable name=%s",name.c_str());
+  writeStatus("ERROR",name,0,0,"UnityMain dispatcher unavailable");
   return false;
  }
  MainScriptTask task;task.name=name;
@@ -660,7 +671,32 @@ static bool queueScriptOnUnityMain(const std::string&name){
  return true;
 }
 
-static void run(const std::string&name){std::string f=safe(name)?g_base+"/"+name:g_base+"/script.lua";writeText(OUT(),"[AZ ScriptCore V0.7] RUN | "+f+"\n");out("[ENV] package="+g_pkg+" | abi="+coreAbi()+" | images="+std::to_string(Il2cpp::GetImagesFresh().size())+" | gchandle="+(Il2cpp::GcHandleApiResolved()?"OK":"MISSING"));out("[API] Class.fromName | findObjectsFresh | Field | Call.exact/default | Hook | Array | gg");writeText(STATUS(),"RUNNING");int rc=luaL_loadfile(G,f.c_str());if(rc==LUA_OK)rc=lua_pcall(G,0,LUA_MULTRET,0);if(rc!=LUA_OK){const char*e=lua_tostring(G,-1);out(std::string("ERROR | ")+(e?e:"unknown"));lua_pop(G,1);writeText(STATUS(),"ERROR");}else{out("[AZ ScriptCore 0.7] DONE");writeText(STATUS(),"DONE");}lua_settop(G,0);lua_gc(G,LUA_GCCOLLECT,0);}
-void worker(){ensureDir();writeText(STATUS(),"INIT");G=luaL_newstate();if(!G){writeText(STATUS(),"LUA_INIT_FAILED");return;}luaL_openlibs(G);reg(G);installMainThreadBootstrap();writeText(STATUS(),"READY");logf("Lua 5.4 READY | Class Call Hook Array gg | UnityMain bootstrap=%d",g_mainHookInstalled.load()?1:0);for(;;){if(access(REQ(),F_OK)==0){std::string q=readText(REQ(),512);unlink(REQ());while(!q.empty()&&(q.back()=='\n'||q.back()=='\r'||q.back()==' '||q.back()=='\t'))q.pop_back();if(!queueScriptOnUnityMain(q)){out("ERROR | UnityMain script dispatcher unavailable");writeText(STATUS(),"ERROR");}}usleep(100000);}}
+static void run(const std::string&name){
+ std::string f=safe(name)?g_base+"/"+name:g_base+"/script.lua";
+ long long start=monoMs();
+ writeStatus("RUNNING",name,start,0,"");
+ writeText(OUT(),"[AZ ScriptCore V0.7] RUN | "+f+"\n");
+ out("[ENV] package="+g_pkg+" | abi="+coreAbi()+" | images="+std::to_string(Il2cpp::GetImagesFresh().size())+" | gchandle="+(Il2cpp::GcHandleApiResolved()?"OK":"MISSING"));
+ out("[API] Class.fromName | findObjectsFresh | Field | Call.exact/default | Hook | Array | gg");
+
+ int rc=luaL_loadfile(G,f.c_str());
+ if(rc==LUA_OK)rc=lua_pcall(G,0,LUA_MULTRET,0);
+ long long elapsed=monoMs()-start;
+
+ if(rc!=LUA_OK){
+  const char*e=lua_tostring(G,-1);
+  std::string msg=e?e:"unknown";
+  out(std::string("ERROR | ")+msg);
+  lua_pop(G,1);
+  writeStatus("ERROR",name,start,elapsed,msg);
+ }else{
+  char b[128];snprintf(b,sizeof(b),"[AZ ScriptCore 0.7] DONE | elapsed=%.3fs",elapsed/1000.0);
+  out(b);
+  writeStatus("DONE",name,start,elapsed,"");
+ }
+ lua_settop(G,0);
+ lua_gc(G,LUA_GCCOLLECT,0);
+}
+void worker(){ensureDir();writeStatus("INIT");G=luaL_newstate();if(!G){writeStatus("ERROR","",0,0,"Lua init failed");return;}luaL_openlibs(G);reg(G);installMainThreadBootstrap();writeStatus("READY");logf("Lua 5.4 READY | Class Call Hook Array gg | UnityMain bootstrap=%d",g_mainHookInstalled.load()?1:0);for(;;){if(access(REQ(),F_OK)==0){std::string q=readText(REQ(),512);unlink(REQ());while(!q.empty()&&(q.back()=='\n'||q.back()=='\r'||q.back()==' '||q.back()=='\t'))q.pop_back();if(!queueScriptOnUnityMain(q)){out("ERROR | UnityMain script dispatcher unavailable");}}usleep(100000);}}
 }
 extern "C" void az_lua_worker(){AZLua::worker();}
