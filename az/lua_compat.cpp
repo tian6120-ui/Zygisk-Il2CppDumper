@@ -107,8 +107,100 @@ static int invoke(lua_State*L,MethodInfo*m,Il2CppObject*recv,int first,int ac){
 }
 
 static int classFrom(lua_State*L){return pushCls(L,Il2cpp::FindClass(luaL_checkstring(L,1)));}
-static int findObjects(lua_State*L){auto*c=ckcls(L,1);auto v=(c&&c->klass)?Il2cpp::GC::FindObjects(c->klass):std::vector<Il2CppObject*>{};lua_createtable(L,(int)v.size(),0);int i=1;for(auto*o:v){pushObj(L,o);lua_seti(L,-2,i++);}return 1;}
-static int clsIndex(lua_State*L){auto*c=ckcls(L,1);const char*k=luaL_checkstring(L,2);if(!strcmp(k,"findObjectsFresh")||!strcmp(k,"findObjects")){lua_pushcfunction(L,findObjects);return 1;}if(!strcmp(k,"name")){lua_pushstring(L,c&&c->klass?c->klass->getFullName().c_str():"");return 1;}lua_pushnil(L);return 1;}
+
+static bool classIsOrDerived(Il2CppClass* actual,Il2CppClass* wanted){
+ if(!actual||!wanted)return false;
+ for(auto*k=actual;k;k=Il2cpp::GetClassParent(k))if(k==wanted)return true;
+ return false;
+}
+
+static void dedupeObjects(std::vector<Il2CppObject*>&v){
+ std::sort(v.begin(),v.end());
+ v.erase(std::unique(v.begin(),v.end()),v.end());
+}
+
+static void collectSingletonGetter(Il2CppClass*k,std::vector<Il2CppObject*>&out){
+ static const char* names[]={"get_Ins","get_Instance","get_instance","get_Singleton","get_Current",nullptr};
+ for(int i=0;names[i];++i){
+  auto*m=findMethod(k,names[i],0);
+  if(!m||!Il2cpp::GetIsMethodStatic(m))continue;
+  Il2CppException*e=nullptr;
+  auto*o=Il2cpp::RuntimeInvokeConvertArgs(m,nullptr,nullptr,0,&e);
+  if(e||!o)continue;
+  auto*oc=Il2cpp::GetObjectClass(o);
+  if(classIsOrDerived(oc,k))out.push_back(o);
+ }
+}
+
+static void collectUnityResources(Il2CppClass*k,std::vector<Il2CppObject*>&out){
+ if(!k)return;
+ auto*res=Il2cpp::FindClass("UnityEngine.Resources");
+ auto*typeObj=Il2cpp::GetTypeObject(Il2cpp::GetClassType(k));
+ if(!res||!typeObj)return;
+ std::vector<std::string>want={"System.Type"};
+ auto*m=findMethod(res,"FindObjectsOfTypeAll",1,&want);
+ if(!m||!Il2cpp::GetIsMethodStatic(m))return;
+ Il2CppObject*args[1]={typeObj};
+ Il2CppException*e=nullptr;
+ auto*arr=Il2cpp::RuntimeInvokeConvertArgs(m,nullptr,args,1,&e);
+ if(e||!arr)return;
+
+ uint32_t n=Il2cpp::GetArrayLength((_Il2CppArray*)arr);
+ if(n>100000)n=100000;
+ auto*intK=Il2cpp::FindClass("System.Int32");
+ if(!intK)return;
+ std::vector<std::string>iwant={"System.Int32"};
+ auto*getValue=findMethod(Il2cpp::GetObjectClass(arr),"GetValue",1,&iwant);
+ if(!getValue)return;
+ out.reserve(out.size()+n);
+ for(uint32_t i=0;i<n;i++){
+  int32_t idx=(int32_t)i;
+  auto*ib=Il2cpp::GetBoxedValue(intK,&idx);
+  if(!ib)continue;
+  Il2CppObject*ga[1]={ib};
+  Il2CppException*ge=nullptr;
+  auto*o=Il2cpp::RuntimeInvokeConvertArgs(getValue,arr,ga,1,&ge);
+  if(ge||!o)continue;
+  auto*oc=Il2cpp::GetObjectClass(o);
+  if(classIsOrDerived(oc,k))out.push_back(o);
+ }
+}
+
+static std::vector<Il2CppObject*> findObjectsSafe(Il2CppClass*k){
+ std::vector<Il2CppObject*>v;
+ if(!k)return v;
+ collectSingletonGetter(k,v);
+ collectUnityResources(k,v);
+ dedupeObjects(v);
+ logf("findObjectsFresh safe class=%s count=%zu",k->getFullName().c_str(),v.size());
+ return v;
+}
+
+static int pushObjectList(lua_State*L,std::vector<Il2CppObject*>v){
+ lua_createtable(L,(int)v.size(),0);int i=1;
+ for(auto*o:v){if(!o)continue;pushObj(L,o);lua_seti(L,-2,i++);}
+ return 1;
+}
+
+static int findObjectsFresh(lua_State*L){
+ auto*c=ckcls(L,1);
+ return pushObjectList(L,(c&&c->klass)?findObjectsSafe(c->klass):std::vector<Il2CppObject*>{});
+}
+
+static int findObjectsHeap(lua_State*L){
+ auto*c=ckcls(L,1);
+ auto v=(c&&c->klass)?Il2cpp::GC::FindObjects(c->klass):std::vector<Il2CppObject*>{};
+ logf("findObjectsHeap liveness class=%s count=%zu",(c&&c->klass)?c->klass->getFullName().c_str():"?",v.size());
+ return pushObjectList(L,std::move(v));
+}
+
+static int clsIndex(lua_State*L){
+ auto*c=ckcls(L,1);const char*k=luaL_checkstring(L,2);
+ if(!strcmp(k,"findObjectsFresh")||!strcmp(k,"findObjects")){lua_pushcfunction(L,findObjectsFresh);return 1;}
+ if(!strcmp(k,"findObjectsHeap")){lua_pushcfunction(L,findObjectsHeap);return 1;}
+ if(!strcmp(k,"name")){lua_pushstring(L,c&&c->klass?c->klass->getFullName().c_str():"");return 1;}
+ lua_pushnil(L);return 1;
+}
 static int getField(lua_State*L){auto*o=resolve(ckobj(L,1));const char*n=luaL_checkstring(L,2);if(!o){lua_pushnil(L);return 1;}auto*k=Il2cpp::GetObjectClass(o);auto*f=k?k->getFieldInHierarchy(n):nullptr;if(!f){lua_pushnil(L);return 1;}return pushManaged(L,Il2cpp::GetFieldValueObject(o,f),f->getType());}
 static int setField(lua_State*L){auto*o=resolve(ckobj(L,1));const char*n=luaL_checkstring(L,2);if(!o)return luaL_error(L,"null object");auto*k=Il2cpp::GetObjectClass(o);auto*f=k?k->getFieldInHierarchy(n):nullptr;if(!f)return luaL_error(L,"field not found: %s",n);auto*b=box(L,3,f->getType());if(f->getType()->isObject()||f->getType()->isArray())Il2cpp::SetFieldValueObject(o,f,b);else{void*p=b?Il2cpp::GetUnboxedValue(b):nullptr;if(!p)return luaL_error(L,"field marshal failed");Il2cpp::SetFieldValue(o,f,p);}lua_pushboolean(L,1);return 1;}
 static int dynCall(lua_State*L){const char*n=lua_tostring(L,lua_upvalueindex(1));auto*o=resolve(ckobj(L,1));if(!o)return luaL_error(L,"null object");int ac=lua_gettop(L)-1;auto*m=findMethod(Il2cpp::GetObjectClass(o),n?n:"",ac);if(!m)return luaL_error(L,"method not found: %s",n?n:"?");return invoke(L,m,o,2,ac);}
