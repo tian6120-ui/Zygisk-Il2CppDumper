@@ -20,6 +20,7 @@ Api* g_api=nullptr;
 JavaVM* g_vm=nullptr;
 bool g_active=false;
 bool g_translated=false;
+static constexpr const char* MODULE_ID="az_scriptcore_v07";
 int g_core_fd=-1;
 int g_ui_fd=-1;
 void* g_native_core=nullptr;
@@ -30,12 +31,33 @@ static void diag(const char*fmt,...){
 }
 
 static bool has(const char*s,const char*q){return s&&q&&strstr(s,q);}
+static std::string niceName(JNIEnv*e,AppSpecializeArgs*a){
+ if(!e||!a||!a->nice_name)return{};
+ const char*n=e->GetStringUTFChars(a->nice_name,nullptr);std::string s=n?n:"";if(n)e->ReleaseStringUTFChars(a->nice_name,n);return s;
+}
 static bool mainUserApp(JNIEnv*e,AppSpecializeArgs*a){
  if(!a||!a->nice_name||!a->app_data_dir)return false;
  if((int)a->uid<10000)return false;
- const char*n=e->GetStringUTFChars(a->nice_name,nullptr);if(!n)return false;
- bool ok=strchr(n,':')==nullptr && strcmp(n,"zygote")!=0 && strcmp(n,"zygote64")!=0;
- e->ReleaseStringUTFChars(a->nice_name,n);return ok;
+ auto n=niceName(e,a);
+ return !n.empty()&&n.find(':')==std::string::npos&&n!="zygote"&&n!="zygote64";
+}
+static bool targetEnabledFromFd(int dir,const std::string&pkg){
+ if(dir<0||pkg.empty())return false;
+ int fd=openat(dir,"tooltarget.txt",O_RDONLY);
+ if(fd<0)return false;
+ std::string s;char b[2048];ssize_t n;
+ while((n=read(fd,b,sizeof(b)))>0&&s.size()<65536)s.append(b,(size_t)n);
+ close(fd);
+ size_t pos=0;
+ while(pos<=s.size()){
+   size_t end=s.find('\n',pos);if(end==std::string::npos)end=s.size();
+   std::string line=s.substr(pos,end-pos);
+   while(!line.empty()&&(line.back()=='\r'||line.back()==' '||line.back()=='\t'))line.pop_back();
+   size_t p=0;while(p<line.size()&&(line[p]==' '||line[p]=='\t'))++p;line.erase(0,p);
+   if(!line.empty()&&line[0]!='#'&&line==pkg)return true;
+   pos=end+1;
+ }
+ return false;
 }
 static std::string isaOf(JNIEnv*e,AppSpecializeArgs*a){
  if(!a||!a->instruction_set)return{};
@@ -129,7 +151,10 @@ class AZ07Module final:public zygisk::ModuleBase{
  void onLoad(Api*api,JNIEnv*env)override{g_api=api;env_=env;if(env)env->GetJavaVM(&g_vm);}
  void preAppSpecialize(AppSpecializeArgs*a)override{
    if(!mainUserApp(env_,a)){g_api->setOption(zygisk::Option::DLCLOSE_MODULE_LIBRARY);return;}
-   int dir=g_api->getModuleDir();if(dir<0)return;
+   int dir=g_api->getModuleDir();if(dir<0){g_api->setOption(zygisk::Option::DLCLOSE_MODULE_LIBRARY);return;}
+   auto pkg=niceName(env_,a);
+   if(!targetEnabledFromFd(dir,pkg)){close(dir);g_api->setOption(zygisk::Option::DLCLOSE_MODULE_LIBRARY);return;}
+   diag("TARGET matched | package=%s",pkg.c_str());
    std::string isa=isaOf(env_,a);
    const char*core=nullptr;const char*ui=nullptr;
 #if defined(__aarch64__)
