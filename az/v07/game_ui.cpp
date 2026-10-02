@@ -25,6 +25,7 @@
 #include "zh_glyphs.h"
 
 #define AZTAG "AZV7UI"
+extern "C" void az_lua_request_stop();
 #define AZI(...) __android_log_print(ANDROID_LOG_INFO,AZTAG,__VA_ARGS__)
 #define AZE(...) __android_log_print(ANDROID_LOG_ERROR,AZTAG,__VA_ARGS__)
 
@@ -261,6 +262,8 @@ void presetTheme(int id){
 const char* runStateLabel(){
  if(g_status=="QUEUED")return L("Queued","已排队");
  if(g_status=="RUNNING")return L("Running","运行中");
+ if(g_status=="STOPPING")return L("Stopping","正在结束");
+ if(g_status=="STOPPED")return L("Stopped","已结束");
  if(g_status=="DONE")return L("Completed","已完成");
  if(g_status=="ERROR"||g_status=="LUA_INIT_FAILED")return L("Failed","失败");
  if(g_status=="INIT")return L("Initializing","初始化");
@@ -269,21 +272,23 @@ const char* runStateLabel(){
 ImVec4 runStateColor(){
  if(g_status=="QUEUED")return ImVec4(.45f,.68f,.98f,1);
  if(g_status=="RUNNING")return ImVec4(.98f,.72f,.20f,1);
+ if(g_status=="STOPPING")return ImVec4(.98f,.48f,.22f,1);
+ if(g_status=="STOPPED")return ImVec4(.78f,.52f,.52f,1);
  if(g_status=="DONE")return ImVec4(.30f,.90f,.52f,1);
  if(g_status=="ERROR"||g_status=="LUA_INIT_FAILED")return ImVec4(.98f,.30f,.34f,1);
  return ImVec4(.62f,.66f,.72f,1);
 }
 double runElapsedSeconds(){
- if(g_status=="RUNNING"&&g_status_start_ms>0){
+ if((g_status=="RUNNING"||g_status=="STOPPING")&&g_status_start_ms>0){
   long long cur=(long long)(now()*1000.0);
   return std::max(0.0,(cur-g_status_start_ms)/1000.0);
  }
- if((g_status=="DONE"||g_status=="ERROR")&&g_status_elapsed_ms>0)return g_status_elapsed_ms/1000.0;
+ if((g_status=="DONE"||g_status=="ERROR"||g_status=="STOPPED")&&g_status_elapsed_ms>0)return g_status_elapsed_ms/1000.0;
  return 0.0;
 }
 void drawRunStatusStrip(){
  ImVec4 col=runStateColor();
- ImGui::BeginChild("##run_status",ImVec2(0,38),true,ImGuiWindowFlags_NoScrollbar);
+ ImGui::BeginChild("##run_status",ImVec2(0,40),true,ImGuiWindowFlags_NoScrollbar);
  ImDrawList*dl=ImGui::GetWindowDrawList();
  ImVec2 p=ImGui::GetCursorScreenPos();
  dl->AddCircleFilled(ImVec2(p.x+7,p.y+9),5.5f,ImGui::ColorConvertFloat4ToU32(col));
@@ -292,6 +297,28 @@ void drawRunStatusStrip(){
  double sec=runElapsedSeconds();
  if(sec>0.0){ImGui::SameLine();ImGui::TextDisabled("· %s %.2fs",L("Elapsed","耗时"),sec);}
  if(!g_status_name.empty()){ImGui::SameLine();ImGui::TextDisabled("· %s",g_status_name.c_str());}
+
+ bool canStop=(g_status=="QUEUED"||g_status=="RUNNING");
+ bool stopping=(g_status=="STOPPING");
+ if(canStop||stopping){
+  float bw=112.0f;
+  float right=ImGui::GetWindowContentRegionMax().x-bw;
+  if(ImGui::GetCursorPosX()<right)ImGui::SameLine(right);
+  else ImGui::SameLine();
+  if(canStop){
+   ImGui::PushStyleColor(ImGuiCol_Button,ImVec4(.72f,.12f,.14f,1));
+   ImGui::PushStyleColor(ImGuiCol_ButtonHovered,ImVec4(.88f,.18f,.20f,1));
+   ImGui::PushStyleColor(ImGuiCol_ButtonActive,ImVec4(.62f,.08f,.10f,1));
+   if(ImGui::Button(L("Stop","结束"),ImVec2(bw,28))){
+    az_lua_request_stop();
+    g_status="STOPPING";
+   }
+   ImGui::PopStyleColor(3);
+  }else{
+   ImGui::TextColored(ImVec4(.98f,.48f,.22f,1),"%s",L("Stopping...","正在结束..."));
+  }
+ }
+
  if(g_status=="ERROR"&&!g_status_message.empty()){
   ImGui::SameLine();ImGui::TextColored(ImVec4(.98f,.45f,.45f,1),"· %s",g_status_message.c_str());
  }
