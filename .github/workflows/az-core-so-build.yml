@@ -1,0 +1,108 @@
+name: AZ Core SO Build
+
+on:
+  push:
+    branches: [az-core-v7-study]
+    paths:
+      - 'az_core/**'
+      - '.github/workflows/az-core-so-build.yml'
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-latest
+    timeout-minutes: 75
+    steps:
+      - name: Checkout AZ source patch
+        uses: actions/checkout@v4
+        with:
+          ref: az-core-v7-study
+
+      - name: Checkout open-source Il2CppTool
+        uses: actions/checkout@v4
+        with:
+          repository: 2228293026/Il2CppTool
+          ref: main
+          path: Il2CppTool
+          fetch-depth: 1
+
+      - name: Checkout Lua 5.4.7
+        uses: actions/checkout@v4
+        with:
+          repository: lua/lua
+          ref: v5.4.7
+          path: deps/lua
+          fetch-depth: 1
+
+      - name: Apply AZ Core source patch
+        shell: pwsh
+        run: python az_core/patch_core.py Il2CppTool . deps/lua
+
+      - name: Resolve Android NDK
+        shell: pwsh
+        run: |
+          $candidates = @()
+          foreach ($envName in 'ANDROID_NDK_HOME', 'ANDROID_NDK_ROOT') {
+            $value = [Environment]::GetEnvironmentVariable($envName)
+            if ($value) { $candidates += $value }
+          }
+          $sdk = @($env:ANDROID_HOME, $env:ANDROID_SDK_ROOT) |
+            Where-Object { $_ } | Select-Object -First 1
+          if ($sdk) {
+            $ndkRoot = Join-Path $sdk 'ndk'
+            if (Test-Path $ndkRoot) {
+              $candidates += Get-ChildItem $ndkRoot -Directory |
+                Sort-Object Name -Descending |
+                ForEach-Object { $_.FullName }
+            }
+          }
+          $ndk = $candidates |
+            Where-Object { $_ -and (Test-Path (Join-Path $_ 'ndk-build.cmd')) } |
+            Select-Object -First 1
+          if (-not $ndk) { throw "No Android NDK found" }
+          Write-Host "Using NDK: $ndk"
+          "ANDROID_NDK_HOME=$ndk" >> $env:GITHUB_ENV
+
+      - name: Build AZ libTool.so
+        shell: pwsh
+        working-directory: Il2CppTool
+        run: .\build.ps1
+
+      - name: Verify AZ payload ABI
+        shell: pwsh
+        run: |
+          $so = 'Il2CppTool/app/src/main/libs/arm64-v8a/libTool.so'
+          if (-not (Test-Path $so)) { throw "Missing AZ payload: $so" }
+          $size = (Get-Item $so).Length
+          if ($size -lt 1000000) { throw "AZ payload unexpectedly small: $size" }
+          Write-Host "AZ payload bytes=$size"
+          Get-FileHash $so -Algorithm SHA256
+
+          $readelf = Join-Path $env:ANDROID_NDK_HOME 'toolchains/llvm/prebuilt/windows-x86_64/bin/llvm-readelf.exe'
+          if (Test-Path $readelf) {
+            & $readelf -d $so | Select-String 'SONAME|NEEDED'
+            $sym = & $readelf -Ws $so
+            $sym | Select-String 'JNI_OnLoad| B0$|AZ_CoreVersion'
+            if (-not ($sym -match 'JNI_OnLoad')) { throw "JNI_OnLoad export missing" }
+            if (-not ($sym -match '\sB0$')) { throw "B0 export missing" }
+          }
+
+      - name: Package corresponding source
+        shell: pwsh
+        run: |
+          Copy-Item LICENSE LICENSE-AZ-HostRepo.txt -ErrorAction SilentlyContinue
+          Compress-Archive -Path Il2CppTool/* -DestinationPath AZ-Core-Corresponding-Source.zip -Force
+
+      - name: Upload AZ Core
+        uses: actions/upload-artifact@v4
+        with:
+          name: AZ-Core-arm64
+          path: Il2CppTool/app/src/main/libs/arm64-v8a/libTool.so
+          if-no-files-found: error
+
+      - name: Upload corresponding source
+        uses: actions/upload-artifact@v4
+        with:
+          name: AZ-Core-Corresponding-Source
+          path: AZ-Core-Corresponding-Source.zip
+          if-no-files-found: error
