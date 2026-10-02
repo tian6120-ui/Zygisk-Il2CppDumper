@@ -32,12 +32,21 @@ add_library(az_scriptcore SHARED
   ${IT}/Includes/Utils.cpp
   ${IT}/Includes/Logger.cpp
   ${IT}/Tool/Util.cpp
+  ${IT}/KittyMemory/KittyMemory.cpp
+  ${IT}/KittyMemory/KittyUtils.cpp
+  ${IT}/KittyMemory/MemoryPatch.cpp
+  ${IT}/KittyMemory/MemoryBackup.cpp
+  ${IT}/imgui/imgui.cpp
+  ${IT}/imgui/imgui_draw.cpp
+  ${IT}/imgui/imgui_widgets.cpp
+  ${IT}/imgui/imgui_tables.cpp
   ${LUA_SRC}
 )
 target_include_directories(az_scriptcore PRIVATE
   ${IT}
   ${IT}/Il2cpp
   ${IT}/Il2cpp/xdl
+  ${IT}/imgui
   ${LUA_ROOT}
   ${TP}/Includes
 )
