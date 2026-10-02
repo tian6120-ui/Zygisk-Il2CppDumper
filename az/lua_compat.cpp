@@ -10,6 +10,10 @@
 #include <mutex>
 #include <atomic>
 #include <algorithm>
+#include <condition_variable>
+#include <deque>
+#include <chrono>
+#include <sys/syscall.h>
 #include "Il2cpp/Il2cpp.h"
 #include "Il2cpp/il2cpp-class.h"
 #include "Dobby/dobby.h"
@@ -96,14 +100,312 @@ static Il2CppObject* box(lua_State*L,int i,Il2CppType*t){
 static MethodInfo* findMethod(Il2CppClass*k,const std::string&name,int ac,const std::vector<std::string>*want=nullptr){
  for(;k;k=Il2cpp::GetClassParent(k)){void*it=nullptr;while(auto*m=Il2cpp::GetClassMethods(k,&it)){const char*mn=Il2cpp::GetMethodName(m);if(!mn||name!=mn)continue;int n=(int)Il2cpp::GetMethodParamCount(m);if(n!=ac)continue;if(want&&(int)want->size()==n){bool ok=true;for(int j=0;j<n;j++)if(!teq(tname(Il2cpp::GetMethodParam(m,j)),(*want)[j])){ok=false;break;}if(!ok)continue;}return m;}}return nullptr;
 }
+
+/* ---------- V7-style Unity main-thread dispatcher ----------
+   The current SilverV7 payload bootstraps from UnitySynchronizationContext,
+   keeps the context + SendOrPostCallback alive with GCHandles, and wakes
+   UnityMain through SynchronizationContext.Post.  We mirror that model here.
+*/
+struct AZDelegateShim {
+ Il2CppObject object;
+ void *method_ptr;
+ void *invoke_impl;
+ Il2CppObject *target;
+ MethodInfo *method;
+ void *delegate_trampoline;
+ intptr_t extra_arg;
+};
+
+struct MainInvokeTask {
+ MethodInfo *method{};
+ Il2CppObject *recv{};
+ std::vector<Il2CppObject*> args;
+ Il2CppObject *result{};
+ Il2CppException *exception{};
+ uint32_t resultHandle{};
+ bool done{};
+ std::mutex mu;
+ std::condition_variable cv;
+};
+
+using SyncExecFn = void(*)(Il2CppObject*,MethodInfo*);
+static SyncExecFn g_syncExecOrig=nullptr;
+static void *g_syncExecTarget=nullptr;
+static std::atomic<bool> g_mainHookInstalled{false};
+static std::atomic<bool> g_mainReady{false};
+static std::atomic<int> g_unityMainTid{0};
+static std::mutex g_mainSetupMu;
+static std::condition_variable g_mainReadyCv;
+static std::mutex g_mainQueueMu;
+static std::deque<MainInvokeTask*> g_mainQueue;
+static Il2CppObject *g_syncContextRaw=nullptr;
+static Il2CppObject *g_sendDelegateRaw=nullptr;
+static uint32_t g_syncContextHandle=0;
+static uint32_t g_sendDelegateHandle=0;
+static MethodInfo *g_syncPostMethod=nullptr;
+
+static Il2CppObject* rooted(uint32_t h,Il2CppObject*raw){
+ if(h&&Il2cpp::GcHandleApiResolved()){
+  if(auto*o=Il2cpp::GC::GetHandleTarget(h))return o;
+ }
+ return raw;
+}
+
+static void finishMainTask(MainInvokeTask*t){
+ if(!t)return;
+ {
+  std::lock_guard<std::mutex>lk(t->mu);
+  t->done=true;
+ }
+ t->cv.notify_one();
+}
+
+/* SendOrPostCallback native target.
+   SilverV7's thunk ignores the managed state argument as well and drains
+   its native queue on UnityMain. */
+static void mainPostThunk(){
+ g_unityMainTid.store((int)syscall(SYS_gettid));
+ std::deque<MainInvokeTask*> q;
+ {
+  std::lock_guard<std::mutex>lk(g_mainQueueMu);
+  q.swap(g_mainQueue);
+ }
+ for(auto*t:q){
+  if(!t)continue;
+  Il2CppException*ex=nullptr;
+  Il2CppObject*r=nullptr;
+  try{
+   r=Il2cpp::RuntimeInvokeConvertArgs(
+      t->method,t->recv,
+      t->args.empty()?nullptr:t->args.data(),
+      (int)t->args.size(),&ex);
+  }catch(...){
+   ex=(Il2CppException*)1;
+  }
+  t->result=r;
+  t->exception=ex;
+  if(r&&Il2cpp::GcHandleApiResolved())t->resultHandle=Il2cpp::GC::NewHandle(r,false);
+  finishMainTask(t);
+ }
+}
+
+static bool setupMainDispatcher(Il2CppObject*ctx){
+ if(!ctx)return false;
+ std::lock_guard<std::mutex>lk(g_mainSetupMu);
+ if(g_mainReady.load())return true;
+
+ auto*ctxClass=Il2cpp::GetObjectClass(ctx);
+ if(!ctxClass)return false;
+ auto*post=findMethod(ctxClass,"Post",2);
+ if(!post){
+  logf("UnityMain bootstrap: SynchronizationContext.Post not found");
+  return false;
+ }
+
+ auto*delegateClass=Il2cpp::FindClass("System.Threading.SendOrPostCallback");
+ if(!delegateClass){
+  logf("UnityMain bootstrap: SendOrPostCallback class not found");
+  return false;
+ }
+ auto*del=delegateClass->New();
+ if(!del){
+  logf("UnityMain bootstrap: failed to allocate SendOrPostCallback");
+  return false;
+ }
+
+ auto*shim=reinterpret_cast<AZDelegateShim*>(del);
+ shim->method_ptr=(void*)mainPostThunk;
+ shim->invoke_impl=(void*)mainPostThunk;
+ shim->target=nullptr;
+ shim->method=nullptr;
+ shim->delegate_trampoline=nullptr;
+ shim->extra_arg=0;
+
+ g_syncContextRaw=ctx;
+ g_sendDelegateRaw=del;
+ g_syncPostMethod=post;
+ if(Il2cpp::GcHandleApiResolved()){
+  g_syncContextHandle=Il2cpp::GC::NewHandle(ctx,false);
+  g_sendDelegateHandle=Il2cpp::GC::NewHandle(del,false);
+ }
+ g_unityMainTid.store((int)syscall(SYS_gettid));
+ g_mainReady.store(true);
+ g_mainReadyCv.notify_all();
+ logf("UnityMain dispatcher READY tid=%d context=%p delegate=%p Post=%p",
+      g_unityMainTid.load(),ctx,del,post);
+ return true;
+}
+
+static void syncExecHook(Il2CppObject*self,MethodInfo*m){
+ if(self&&!g_mainReady.load())setupMainDispatcher(self);
+ auto orig=g_syncExecOrig;
+ if(orig)orig(self,m);
+}
+
+static bool installMainThreadBootstrap(){
+ if(g_mainHookInstalled.load())return true;
+ auto*c=Il2cpp::FindClass("UnityEngine.UnitySynchronizationContext");
+ if(!c){
+  logf("UnityMain bootstrap: class unavailable");
+  return false;
+ }
+ MethodInfo*m=findMethod(c,"Exec",0);
+ if(!m)m=findMethod(c,"ExecuteTasks",0);
+ if(!m||!m->methodPointer){
+  logf("UnityMain bootstrap: Exec/ExecuteTasks unavailable");
+  return false;
+ }
+ void*orig=nullptr;
+ int rc=DobbyHook(m->methodPointer,(void*)syncExecHook,&orig);
+ if(rc!=0||!orig){
+  logf("UnityMain bootstrap: DobbyHook failed rc=%d",rc);
+  return false;
+ }
+ g_syncExecTarget=m->methodPointer;
+ g_syncExecOrig=(SyncExecFn)orig;
+ g_mainHookInstalled.store(true);
+ logf("UnityMain bootstrap hook installed method=%s target=%p orig=%p",
+      Il2cpp::GetMethodName(m),g_syncExecTarget,orig);
+ return true;
+}
+
+static bool waitMainDispatcher(int timeoutMs){
+ if(g_mainReady.load())return true;
+ installMainThreadBootstrap();
+ if(g_mainReady.load())return true;
+ std::unique_lock<std::mutex>lk(g_mainSetupMu);
+ return g_mainReadyCv.wait_for(lk,std::chrono::milliseconds(timeoutMs),[]{
+  return g_mainReady.load();
+ });
+}
+
+static bool postMainWake(){
+ auto*ctx=rooted(g_syncContextHandle,g_syncContextRaw);
+ auto*del=rooted(g_sendDelegateHandle,g_sendDelegateRaw);
+ auto*post=g_syncPostMethod;
+ if(!ctx||!del||!post)return false;
+
+ /* Match V7's Post call shape: managed ref parameters passed through
+    il2cpp_runtime_invoke as addresses of object references. */
+ Il2CppObject*arg0=del;
+ Il2CppObject*arg1=nullptr;
+ void*params[2]={&arg0,&arg1};
+ Il2CppException*ex=nullptr;
+ try{
+  Il2cpp::RuntimeInvoke(post,ctx,params,&ex);
+ }catch(...){
+  ex=(Il2CppException*)1;
+ }
+ if(ex){
+  logf("UnityMain Post threw");
+  return false;
+ }
+ return true;
+}
+
+struct MainInvokeReply{
+ Il2CppObject*result{};
+ uint32_t resultHandle{};
+ bool exception{};
+ bool timeout{};
+ bool unavailable{};
+};
+
+static MainInvokeReply invokeOnUnityMain(MethodInfo*m,Il2CppObject*recv,
+                                         const std::vector<Il2CppObject*>&args){
+ MainInvokeReply rep{};
+ if(!m){rep.unavailable=true;return rep;}
+
+ int tid=(int)syscall(SYS_gettid);
+ if(g_mainReady.load()&&tid==g_unityMainTid.load()){
+  Il2CppException*ex=nullptr;
+  try{
+   rep.result=Il2cpp::RuntimeInvokeConvertArgs(
+     m,recv,args.empty()?nullptr:const_cast<Il2CppObject**>(args.data()),
+     (int)args.size(),&ex);
+  }catch(...){ex=(Il2CppException*)1;}
+  rep.exception=(ex!=nullptr);
+  return rep;
+ }
+
+ if(!waitMainDispatcher(4000)){
+  rep.unavailable=true;
+  logf("UnityMain dispatcher unavailable for %s",Il2cpp::GetMethodName(m));
+  return rep;
+ }
+
+ /* Keep receiver + boxed arguments alive while waiting for UnityMain. */
+ uint32_t recvH=0;
+ std::vector<uint32_t> argH(args.size(),0);
+ if(Il2cpp::GcHandleApiResolved()){
+  if(recv)recvH=Il2cpp::GC::NewHandle(recv,false);
+  for(size_t i=0;i<args.size();++i)if(args[i])argH[i]=Il2cpp::GC::NewHandle(args[i],false);
+ }
+
+ MainInvokeTask task;
+ task.method=m;
+ task.recv=rooted(recvH,recv);
+ task.args.resize(args.size());
+ for(size_t i=0;i<args.size();++i)task.args[i]=rooted(argH[i],args[i]);
+
+ {
+  std::lock_guard<std::mutex>lk(g_mainQueueMu);
+  g_mainQueue.push_back(&task);
+ }
+
+ logf("UnityMain queue %s recv=%p argc=%zu",Il2cpp::GetMethodName(m),task.recv,args.size());
+ if(!postMainWake()){
+  {
+   std::lock_guard<std::mutex>lk(g_mainQueueMu);
+   auto it=std::find(g_mainQueue.begin(),g_mainQueue.end(),&task);
+   if(it!=g_mainQueue.end())g_mainQueue.erase(it);
+  }
+  rep.unavailable=true;
+ }else{
+  std::unique_lock<std::mutex>lk(task.mu);
+  if(!task.cv.wait_for(lk,std::chrono::milliseconds(5000),[&]{return task.done;})){
+   rep.timeout=true;
+   logf("UnityMain invoke timeout method=%s",Il2cpp::GetMethodName(m));
+  }else{
+   rep.result=rooted(task.resultHandle,task.result);
+   rep.resultHandle=task.resultHandle;
+   rep.exception=(task.exception!=nullptr);
+   logf("UnityMain invoke done method=%s result=%p exception=%d",
+        Il2cpp::GetMethodName(m),rep.result,rep.exception?1:0);
+  }
+ }
+
+ if(recvH)Il2cpp::GC::FreeHandle(recvH);
+ for(auto h:argH)if(h)Il2cpp::GC::FreeHandle(h);
+ return rep;
+}
+
+static void releaseReply(MainInvokeReply&r){
+ if(r.resultHandle){Il2cpp::GC::FreeHandle(r.resultHandle);r.resultHandle=0;}
+}
+
 static bool desc(lua_State*L,int i,std::string&d,std::string&n,std::vector<std::string>&p){
  if(!lua_istable(L,i))return false;lua_getfield(L,i,"declaring");if(const char*s=lua_tostring(L,-1))d=s;lua_pop(L,1);lua_getfield(L,i,"name");if(const char*s=lua_tostring(L,-1))n=s;lua_pop(L,1);lua_getfield(L,i,"params");if(lua_istable(L,-1)){lua_Integer z=lua_rawlen(L,-1);for(lua_Integer x=1;x<=z;x++){lua_geti(L,-1,x);const char*s=lua_tostring(L,-1);p.emplace_back(s?s:"");lua_pop(L,1);}}lua_pop(L,1);return!d.empty()&&!n.empty();
 }
 static MethodInfo* fromDesc(lua_State*L,int i){std::string d,n;std::vector<std::string>p;if(!desc(L,i,d,n,p))return nullptr;auto*k=Il2cpp::FindClass(d.c_str());return k?findMethod(k,n,(int)p.size(),&p):nullptr;}
 static int invoke(lua_State*L,MethodInfo*m,Il2CppObject*recv,int first,int ac){
- if(!m)return luaL_error(L,"method not found");int n=(int)Il2cpp::GetMethodParamCount(m);if(n!=ac)return luaL_error(L,"arg count need=%d got=%d",n,ac);std::vector<Il2CppObject*>a(n);
- for(int j=0;j<n;j++){auto*t=Il2cpp::GetMethodParam(m,j);a[j]=box(L,first+j,t);if(!lua_isnil(L,first+j)&&!a[j]&&!luaL_testudata(L,first+j,"AZ.Obj"))return luaL_error(L,"marshal arg %d as %s failed",j+1,tname(t).c_str());}
- Il2CppException*e=nullptr;auto*r=Il2cpp::RuntimeInvokeConvertArgs(m,recv,a.empty()?nullptr:a.data(),n,&e);if(e)return luaL_error(L,"managed exception in %s",Il2cpp::GetMethodName(m));return pushManaged(L,r,Il2cpp::GetMethodReturnType(m));
+ if(!m)return luaL_error(L,"method not found");
+ int n=(int)Il2cpp::GetMethodParamCount(m);
+ if(n!=ac)return luaL_error(L,"arg count need=%d got=%d",n,ac);
+ std::vector<Il2CppObject*>a(n);
+ for(int j=0;j<n;j++){
+  auto*t=Il2cpp::GetMethodParam(m,j);
+  a[j]=box(L,first+j,t);
+  if(!lua_isnil(L,first+j)&&!a[j]&&!luaL_testudata(L,first+j,"AZ.Obj"))
+   return luaL_error(L,"marshal arg %d as %s failed",j+1,tname(t).c_str());
+ }
+ auto rep=invokeOnUnityMain(m,recv,a);
+ if(rep.unavailable)return luaL_error(L,"Unity main-thread dispatcher unavailable in %s",Il2cpp::GetMethodName(m));
+ if(rep.timeout)return luaL_error(L,"Unity main-thread invoke timeout in %s",Il2cpp::GetMethodName(m));
+ if(rep.exception){releaseReply(rep);return luaL_error(L,"managed exception in %s",Il2cpp::GetMethodName(m));}
+ int rc=pushManaged(L,rep.result,Il2cpp::GetMethodReturnType(m));
+ releaseReply(rep);
+ return rc;
 }
 
 static int classFrom(lua_State*L){return pushCls(L,Il2cpp::FindClass(luaL_checkstring(L,1)));}
@@ -242,6 +544,6 @@ static const char* coreAbi(){
 #endif
 }
 static void run(const std::string&name){std::string f=safe(name)?g_base+"/"+name:g_base+"/script.lua";writeText(OUT(),"[AZ ScriptCore V0.7] RUN | "+f+"\n");out("[ENV] package="+g_pkg+" | abi="+coreAbi()+" | images="+std::to_string(Il2cpp::GetImagesFresh().size())+" | gchandle="+(Il2cpp::GcHandleApiResolved()?"OK":"MISSING"));out("[API] Class.fromName | findObjectsFresh | Field | Call.exact/default | Hook | Array | gg");writeText(STATUS(),"RUNNING");int rc=luaL_loadfile(G,f.c_str());if(rc==LUA_OK)rc=lua_pcall(G,0,LUA_MULTRET,0);if(rc!=LUA_OK){const char*e=lua_tostring(G,-1);out(std::string("ERROR | ")+(e?e:"unknown"));lua_pop(G,1);writeText(STATUS(),"ERROR");}else{out("[AZ ScriptCore 0.7] DONE");writeText(STATUS(),"DONE");}lua_settop(G,0);lua_gc(G,LUA_GCCOLLECT,0);}
-void worker(){ensureDir();writeText(STATUS(),"INIT");G=luaL_newstate();if(!G){writeText(STATUS(),"LUA_INIT_FAILED");return;}luaL_openlibs(G);reg(G);writeText(STATUS(),"READY");logf("Lua 5.4 READY | Class Call Hook Array gg");for(;;){if(access(REQ(),F_OK)==0){std::string q=readText(REQ(),512);unlink(REQ());while(!q.empty()&&(q.back()=='\n'||q.back()=='\r'||q.back()==' '||q.back()=='\t'))q.pop_back();run(q);}usleep(100000);}}
+void worker(){ensureDir();writeText(STATUS(),"INIT");G=luaL_newstate();if(!G){writeText(STATUS(),"LUA_INIT_FAILED");return;}luaL_openlibs(G);reg(G);installMainThreadBootstrap();writeText(STATUS(),"READY");logf("Lua 5.4 READY | Class Call Hook Array gg | UnityMain bootstrap=%d",g_mainHookInstalled.load()?1:0);for(;;){if(access(REQ(),F_OK)==0){std::string q=readText(REQ(),512);unlink(REQ());while(!q.empty()&&(q.back()=='\n'||q.back()=='\r'||q.back()==' '||q.back()=='\t'))q.pop_back();run(q);}usleep(100000);}}
 }
 extern "C" void az_lua_worker(){AZLua::worker();}
