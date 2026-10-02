@@ -45,6 +45,22 @@ static std::mutex hookMu;
 static std::unordered_map<int,HookRec> hooks;
 static std::atomic<int> nextHook{1};
 
+// Match SilverV7's Lua-object ownership model:
+// ordinary userdata stores raw Il2CppObject* with handle=0.
+// Call-return references may be rooted externally instead of making the
+// userdata own/free the handle during Lua collectgarbage().
+static std::mutex g_rootMu;
+static std::vector<uint32_t> g_callRoots;
+static constexpr size_t kMaxCallRoots=16384;
+
+static void retainCallResult(Il2CppObject*o){
+ if(!o||!Il2cpp::GcHandleApiResolved())return;
+ std::lock_guard<std::mutex>lk(g_rootMu);
+ if(g_callRoots.size()>=kMaxCallRoots)return;
+ uint32_t h=Il2cpp::GC::NewHandle(o,false);
+ if(h)g_callRoots.push_back(h);
+}
+
 static void logf(const char *fmt,...){
  char b[1024]; va_list ap; va_start(ap,fmt); vsnprintf(b,sizeof(b),fmt,ap); va_end(ap);
  __android_log_print(ANDROID_LOG_INFO,"AZL07","%s",b);
@@ -81,9 +97,22 @@ static Il2CppObject* resolve(Obj*u){
  // so the rooted raw pointer remains stable for the wrapper lifetime.
  return u?u->raw:nullptr;
 }
-static int pushObj(lua_State*L,Il2CppObject*o){if(!o){lua_pushnil(L);return 1;}auto*u=(Obj*)lua_newuserdatauv(L,sizeof(Obj),0);new(u)Obj{};u->raw=o;if(Il2cpp::GcHandleApiResolved())u->handle=Il2cpp::GC::NewHandle(o,false);luaL_getmetatable(L,"AZ.Obj");lua_setmetatable(L,-2);return 1;}
+static int pushObj(lua_State*L,Il2CppObject*o){
+ if(!o){lua_pushnil(L);return 1;}
+ auto*u=(Obj*)lua_newuserdatauv(L,sizeof(Obj),0);
+ new(u)Obj{};
+ u->raw=o;
+ u->handle=0; // SilverV7 findObjects userdata: raw pointer + zero owned handle.
+ luaL_getmetatable(L,"AZ.Obj");
+ lua_setmetatable(L,-2);
+ return 1;
+}
 static int pushCls(lua_State*L,Il2CppClass*k){if(!k){lua_pushnil(L);return 1;}auto*u=(Cls*)lua_newuserdatauv(L,sizeof(Cls),0);u->klass=k;luaL_getmetatable(L,"AZ.Cls");lua_setmetatable(L,-2);return 1;}
-static int objgc(lua_State*L){auto*u=(Obj*)luaL_testudata(L,1,"AZ.Obj");if(u&&u->handle){Il2cpp::GC::FreeHandle(u->handle);u->handle=0;}return 0;}
+static int objgc(lua_State*L){
+ auto*u=(Obj*)luaL_testudata(L,1,"AZ.Obj");
+ if(u){u->raw=nullptr;u->handle=0;}
+ return 0;
+}
 static int objstr(lua_State*L){auto*o=resolve(ckobj(L,1));if(!o){lua_pushliteral(L,"<managed:null>");return 1;}auto*k=Il2cpp::GetObjectClass(o);lua_pushfstring(L,"<managed:%s@%p>",k?k->getName():"?",o);return 1;}
 static int clsstr(lua_State*L){auto*c=ckcls(L,1);lua_pushfstring(L,"<class:%s>",c&&c->klass?c->klass->getFullName().c_str():"null");return 1;}
 static bool isEnum(Il2CppType*t){auto*k=t?t->getClass():nullptr;return k&&Il2cpp::GetClassIsEnum(k);}
@@ -127,7 +156,10 @@ static int pushManaged(lua_State*L,Il2CppObject*o,Il2CppType*t){
   return 1;
  }
 
- // Reference/array/list/class: keep the managed object intact and root it.
+ // Reference/array/list/class: SilverV7 does not make ordinary Lua
+ // userdata own a GCHandle. Keep an external root for Call results instead,
+ // so Lua collectgarbage() cannot call il2cpp_gchandle_free on the wrapper.
+ retainCallResult(o);
  return pushObj(L,o);
 }
 static Il2CppObject* box(lua_State*L,int i,Il2CppType*t){
@@ -678,6 +710,7 @@ static void run(const std::string&name){
  writeText(OUT(),"[AZ ScriptCore V0.7] RUN | "+f+"\n");
  out("[ENV] package="+g_pkg+" | abi="+coreAbi()+" | images="+std::to_string(Il2cpp::GetImagesFresh().size())+" | gchandle="+(Il2cpp::GcHandleApiResolved()?"OK":"MISSING"));
  out("[API] Class.fromName | findObjectsFresh | Field | Call.exact/default | Hook | Array | gg");
+ out("[OBJ] V7 ownership | userdata=raw+handle0 | call-result roots=external");
 
  int rc=luaL_loadfile(G,f.c_str());
  if(rc==LUA_OK)rc=lua_pcall(G,0,LUA_MULTRET,0);
