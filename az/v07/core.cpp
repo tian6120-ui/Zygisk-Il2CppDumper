@@ -5,6 +5,7 @@
 #include <sys/stat.h>
 #include <cstdio>
 #include <cstring>
+#include <cstdlib>
 #include <string>
 #include "Il2cpp/Il2cpp.h"
 #include "Includes/Logger.h"
@@ -39,7 +40,7 @@ static void worker(){
  if(!ok){mark("script.status","IL2CPP_INIT_FAILED");return;}
  mark("agent.ready","AZ ScriptCore 0.7");
  mark("script.status","READY");
- az_ui_activate();
+ if(getenv("AZ_TRANSLATED_GUEST")==nullptr) az_ui_activate();
  az_lua_worker();
 }
 
