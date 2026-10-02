@@ -46,9 +46,14 @@ std::mutex g_region_mu;
 float g_region[4]={18,90,125,200};
 
 std::vector<char> g_script(256*1024,0);
-std::string g_output,g_status="WAITING",g_base,g_last,g_req,g_out,g_stat;
+std::string g_output,g_status="WAITING",g_base,g_last,g_req,g_out,g_stat,g_ui_cfg;
 double g_poll=0;
-bool g_open=true,g_autoscroll=true;
+bool g_open=false,g_autoscroll=true,g_center_next=false;
+float g_font_scale=1.25f;
+float g_font_base_px=20.0f;
+int g_font_scale_idx=1;
+const float kFontScales[]={1.00f,1.25f,1.50f,1.75f,2.00f,2.25f,2.50f};
+const char* kFontScaleLabels[]={"100%","125%","150%","175%","200%","225%","250%"};
 
 std::string pkg(){
  FILE*f=fopen("/proc/self/cmdline","rb");if(!f)return"unknown";char b[256]{};size_t n=fread(b,1,sizeof(b)-1,f);fclose(f);
@@ -67,6 +72,20 @@ void poll(){
  double n=now();if(n-g_poll<.2)return;g_poll=n;paths();g_status=rf(g_stat,4096);while(!g_status.empty()&&(g_status.back()=='\n'||g_status.back()=='\r'))g_status.pop_back();g_output=rf(g_out);
 }
 void loadLast(){paths();auto s=rf(g_last,g_script.size()-1);memset(g_script.data(),0,g_script.size());if(!s.empty())memcpy(g_script.data(),s.data(),std::min(s.size(),g_script.size()-1));}
+void loadUiConfig(){
+ paths();auto s=rf(g_ui_cfg,4096);if(s.empty())return;
+ auto p=s.find("fontScale=");if(p==std::string::npos)return;
+ float v=strtof(s.c_str()+p+10,nullptr);
+ int best=1;float d=1000.f;
+ for(int i=0;i<7;++i){float nd=fabsf(kFontScales[i]-v);if(nd<d){d=nd;best=i;}}
+ g_font_scale_idx=best;g_font_scale=kFontScales[best];
+}
+void saveUiConfig(){paths();char b[96];snprintf(b,sizeof(b),"fontScale=%.2f\n",g_font_scale);wf(g_ui_cfg,b);}
+void applyFontScale(){
+ if(!ImGui::GetCurrentContext())return;
+ g_font_scale=kFontScales[std::clamp(g_font_scale_idx,0,6)];
+ ImGui::GetIO().FontGlobalScale=g_font_scale;
+}
 void save(){paths();wf(g_last,std::string(g_script.data()));}
 void run(){save();wf(g_req,"last.lua\n");}
 
@@ -106,10 +125,16 @@ void style(){
 void region(float x1,float y1,float x2,float y2){std::lock_guard<std::mutex>lk(g_region_mu);g_region[0]=x1;g_region[1]=y1;g_region[2]=x2;g_region[3]=y2;}
 void draw(int w,int h){
  poll();float x1=18,y1=90,x2=125,y2=200;
- ImGui::SetNextWindowPos(ImVec2(22,100),ImGuiCond_Once);ImGui::SetNextWindowSize(ImVec2(90,90),ImGuiCond_Always);
- if(ImGui::Begin("##AZ",nullptr,ImGuiWindowFlags_NoTitleBar|ImGuiWindowFlags_NoResize|ImGuiWindowFlags_NoSavedSettings)){if(ImGui::Button("AZ",ImVec2(72,72)))g_open=!g_open;x1=std::min(x1,ImGui::GetWindowPos().x);y1=std::min(y1,ImGui::GetWindowPos().y);x2=std::max(x2,ImGui::GetWindowPos().x+ImGui::GetWindowSize().x);y2=std::max(y2,ImGui::GetWindowPos().y+ImGui::GetWindowSize().y);}ImGui::End();
+ ImGui::SetNextWindowPos(ImVec2(22,100),ImGuiCond_Once);ImGui::SetNextWindowSize(ImVec2(96,96),ImGuiCond_Always);
+ if(ImGui::Begin("##AZ",nullptr,ImGuiWindowFlags_NoTitleBar|ImGuiWindowFlags_NoResize|ImGuiWindowFlags_NoSavedSettings)){
+   if(ImGui::Button("AZ",ImVec2(78,78))){bool next=!g_open;g_open=next;if(next)g_center_next=true;}
+   x1=std::min(x1,ImGui::GetWindowPos().x);y1=std::min(y1,ImGui::GetWindowPos().y);x2=std::max(x2,ImGui::GetWindowPos().x+ImGui::GetWindowSize().x);y2=std::max(y2,ImGui::GetWindowPos().y+ImGui::GetWindowSize().y);
+ }ImGui::End();
  if(g_open){
-  ImGui::SetNextWindowPos(ImVec2(125,65),ImGuiCond_Once);ImGui::SetNextWindowSize(ImVec2(std::max(540.f,w*.62f),std::max(500.f,h*.72f)),ImGuiCond_Once);
+  float pw=std::min((float)w-70.0f,std::max(680.0f,w*.66f));
+  float ph=std::min((float)h-70.0f,std::max(540.0f,h*.76f));
+  if(g_center_next){ImGui::SetNextWindowPos(ImVec2(w*.5f,h*.5f),ImGuiCond_Always,ImVec2(.5f,.5f));g_center_next=false;}
+  ImGui::SetNextWindowSize(ImVec2(pw,ph),ImGuiCond_Once);
   if(ImGui::Begin("AZ ScriptCore V0.7",&g_open,ImGuiWindowFlags_NoSavedSettings)){
    auto p=ImGui::GetWindowPos(),s=ImGui::GetWindowSize();x1=std::min(x1,p.x);y1=std::min(y1,p.y);x2=std::max(x2,p.x+s.x);y2=std::max(y2,p.y+s.y);
    ImGui::Text("Status: %s",g_status.empty()?"WAITING":g_status.c_str());ImGui::SameLine();ImGui::TextDisabled("| %s",pkg().c_str());
