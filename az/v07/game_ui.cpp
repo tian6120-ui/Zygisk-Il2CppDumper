@@ -50,7 +50,8 @@ std::mutex g_region_mu;
 float g_region[4]={18,90,125,200};
 
 std::vector<char> g_script(256*1024,0);
-std::string g_output,g_status="WAITING",g_base,g_last,g_req,g_out,g_stat,g_ui_cfg,g_scripts_dir;
+std::string g_output,g_status="WAITING",g_status_name,g_status_message,g_base,g_last,g_req,g_out,g_stat,g_ui_cfg,g_scripts_dir;
+long long g_status_start_ms=0,g_status_elapsed_ms=0;
 double g_poll=0;
 bool g_open=false,g_autoscroll=true,g_center_next=false;
 float g_font_scale=1.25f;
@@ -83,8 +84,24 @@ std::string rf(const std::string&p,size_t lim=2*1024*1024){
 }
 bool wf(const std::string&p,const std::string&s){FILE*f=fopen(p.c_str(),"wb");if(!f)return false;size_t n=fwrite(s.data(),1,s.size(),f);fclose(f);return n==s.size();}
 double now(){timespec t{};clock_gettime(CLOCK_MONOTONIC,&t);return (double)t.tv_sec+t.tv_nsec/1e9;}
+std::string statusValue(const std::string&s,const char*key){
+ std::string k=std::string(key)+"=";auto p=s.find(k);if(p==std::string::npos)return{};p+=k.size();auto e=s.find('\n',p);return s.substr(p,e==std::string::npos?s.size()-p:e-p);
+}
 void poll(){
- double n=now();if(n-g_poll<.2)return;g_poll=n;paths();g_status=rf(g_stat,4096);while(!g_status.empty()&&(g_status.back()=='\n'||g_status.back()=='\r'))g_status.pop_back();g_output=rf(g_out);
+ double n=now();if(n-g_poll<.2)return;g_poll=n;paths();
+ auto raw=rf(g_stat,4096);
+ while(!raw.empty()&&(raw.back()=='\n'||raw.back()=='\r'))raw.pop_back();
+ if(raw.find("state=")!=std::string::npos){
+  auto st=statusValue(raw,"state");if(!st.empty())g_status=st;
+  g_status_name=statusValue(raw,"name");
+  g_status_message=statusValue(raw,"message");
+  auto sm=statusValue(raw,"start_ms");g_status_start_ms=sm.empty()?0:strtoll(sm.c_str(),nullptr,10);
+  auto em=statusValue(raw,"elapsed_ms");g_status_elapsed_ms=em.empty()?0:strtoll(em.c_str(),nullptr,10);
+ }else if(!raw.empty()){
+  // Backward compatibility with older READY/RUNNING/DONE files.
+  g_status=raw;g_status_name.clear();g_status_message.clear();g_status_start_ms=0;g_status_elapsed_ms=0;
+ }
+ g_output=rf(g_out);
 }
 void loadLast(){paths();auto s=rf(g_last,g_script.size()-1);memset(g_script.data(),0,g_script.size());if(!s.empty())memcpy(g_script.data(),s.data(),std::min(s.size(),g_script.size()-1));}
 std::string cfgValue(const std::string&s,const char*key){
@@ -241,6 +258,45 @@ void presetTheme(int id){
  if(id==3){g_accent[0]=.55f;g_accent[1]=.20f;g_accent[2]=.78f;g_bg[0]=.055f;g_bg[1]=.04f;g_bg[2]=.07f;}
  applyTheme();saveUiConfig();
 }
+const char* runStateLabel(){
+ if(g_status=="QUEUED")return L("Queued","已排队");
+ if(g_status=="RUNNING")return L("Running","运行中");
+ if(g_status=="DONE")return L("Completed","已完成");
+ if(g_status=="ERROR"||g_status=="LUA_INIT_FAILED")return L("Failed","失败");
+ if(g_status=="INIT")return L("Initializing","初始化");
+ return L("Idle","待机");
+}
+ImVec4 runStateColor(){
+ if(g_status=="QUEUED")return ImVec4(.45f,.68f,.98f,1);
+ if(g_status=="RUNNING")return ImVec4(.98f,.72f,.20f,1);
+ if(g_status=="DONE")return ImVec4(.30f,.90f,.52f,1);
+ if(g_status=="ERROR"||g_status=="LUA_INIT_FAILED")return ImVec4(.98f,.30f,.34f,1);
+ return ImVec4(.62f,.66f,.72f,1);
+}
+double runElapsedSeconds(){
+ if(g_status=="RUNNING"&&g_status_start_ms>0){
+  long long cur=(long long)(now()*1000.0);
+  return std::max(0.0,(cur-g_status_start_ms)/1000.0);
+ }
+ if((g_status=="DONE"||g_status=="ERROR")&&g_status_elapsed_ms>0)return g_status_elapsed_ms/1000.0;
+ return 0.0;
+}
+void drawRunStatusStrip(){
+ ImVec4 col=runStateColor();
+ ImGui::BeginChild("##run_status",ImVec2(0,38),true,ImGuiWindowFlags_NoScrollbar);
+ ImDrawList*dl=ImGui::GetWindowDrawList();
+ ImVec2 p=ImGui::GetCursorScreenPos();
+ dl->AddCircleFilled(ImVec2(p.x+7,p.y+9),5.5f,ImGui::ColorConvertFloat4ToU32(col));
+ ImGui::SetCursorPosX(ImGui::GetCursorPosX()+20);
+ ImGui::TextColored(col,"%s: %s",L("Run status","运行状态"),runStateLabel());
+ double sec=runElapsedSeconds();
+ if(sec>0.0){ImGui::SameLine();ImGui::TextDisabled("· %s %.2fs",L("Elapsed","耗时"),sec);}
+ if(!g_status_name.empty()){ImGui::SameLine();ImGui::TextDisabled("· %s",g_status_name.c_str());}
+ if(g_status=="ERROR"&&!g_status_message.empty()){
+  ImGui::SameLine();ImGui::TextColored(ImVec4(.98f,.45f,.45f,1),"· %s",g_status_message.c_str());
+ }
+ ImGui::EndChild();
+}
 void sectionTitle(const char*title,const char*sub=nullptr){
  ImVec2 p=ImGui::GetCursorScreenPos();float h=sub?38.0f:26.0f;
  ImDrawList*dl=ImGui::GetWindowDrawList();
@@ -280,11 +336,8 @@ void draw(int w,int h){
    ImGui::BeginChild("##topbar",ImVec2(0,48),true,ImGuiWindowFlags_NoScrollbar);
    ImGui::TextUnformatted("AZ ScriptCore");ImGui::SameLine();ImGui::TextDisabled("V7 Path");
    ImGui::TextDisabled("%s",pkg().c_str());
-   const char*st=g_status.empty()?"WAITING":g_status.c_str();
-   ImVec4 sc=(g_status.find("RUNNING")!=std::string::npos)?ImVec4(.95f,.72f,.20f,1):
-             (g_status.find("DONE")!=std::string::npos)?ImVec4(.30f,.90f,.52f,1):
-             (g_status.find("ERROR")!=std::string::npos)?ImVec4(.98f,.30f,.34f,1):ImVec4(.65f,.68f,.72f,1);
-   ImGui::SameLine();ImGui::TextColored(sc,"  %s: %s",L("Status","状态"),st);
+   ImVec4 sc=runStateColor();
+   ImGui::SameLine();ImGui::TextColored(sc,"  %s: %s",L("Status","状态"),runStateLabel());
    ImGui::EndChild();
 
    ImGui::Dummy(ImVec2(0,4));
@@ -308,8 +361,10 @@ void draw(int w,int h){
     ImGui::SameLine();if(ImGui::Button(L("Save","保存"),ImVec2(88,34)))save();
     ImGui::SameLine();if(ImGui::Button(L("Clear","清空"),ImVec2(88,34))){memset(g_script.data(),0,g_script.size());}
     ImGui::EndChild();
+    ImGui::Dummy(ImVec2(0,3));
+    drawRunStatusStrip();
 
-    float avail=ImGui::GetContentRegionAvail().y;float editorH=std::max(190.f,avail*.49f);
+    float avail=ImGui::GetContentRegionAvail().y;float editorH=std::max(175.f,avail*.47f);
     ImGui::BeginChild("##editor_card",ImVec2(0,editorH),true);
     char sub[96];snprintf(sub,sizeof(sub),g_language?"UTF-8 · 当前 %zu 字节":"UTF-8 · %zu bytes",strnlen(g_script.data(),g_script.size()));
     sectionTitle(L("Script input","脚本输入"),sub);
