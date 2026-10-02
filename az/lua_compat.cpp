@@ -128,6 +128,13 @@ struct MainInvokeTask {
  std::condition_variable cv;
 };
 
+struct MainScriptTask {
+ std::string name;
+ bool done{};
+ std::mutex mu;
+ std::condition_variable cv;
+};
+
 using SyncExecFn = void(*)(Il2CppObject*,MethodInfo*);
 static SyncExecFn g_syncExecOrig=nullptr;
 static void *g_syncExecTarget=nullptr;
@@ -138,6 +145,9 @@ static std::mutex g_mainSetupMu;
 static std::condition_variable g_mainReadyCv;
 static std::mutex g_mainQueueMu;
 static std::deque<MainInvokeTask*> g_mainQueue;
+static std::mutex g_scriptQueueMu;
+static std::deque<MainScriptTask*> g_scriptQueue;
+static void run(const std::string&name);
 static Il2CppObject *g_syncContextRaw=nullptr;
 static Il2CppObject *g_sendDelegateRaw=nullptr;
 static uint32_t g_syncContextHandle=0;
@@ -236,10 +246,30 @@ static bool setupMainDispatcher(Il2CppObject*ctx){
  return true;
 }
 
+static void drainScriptQueueOnUnityMain(){
+ MainScriptTask*t=nullptr;
+ {
+  std::lock_guard<std::mutex>lk(g_scriptQueueMu);
+  if(!g_scriptQueue.empty()){t=g_scriptQueue.front();g_scriptQueue.pop_front();}
+ }
+ if(!t)return;
+ g_unityMainTid.store((int)syscall(SYS_gettid));
+ logf("UnityMain script begin name=%s tid=%d",t->name.c_str(),g_unityMainTid.load());
+ run(t->name);
+ logf("UnityMain script end name=%s",t->name.c_str());
+ {
+  std::lock_guard<std::mutex>lk(t->mu);t->done=true;
+ }
+ t->cv.notify_one();
+}
+
 static void syncExecHook(Il2CppObject*self,MethodInfo*m){
  if(self&&!g_mainReady.load())setupMainDispatcher(self);
  auto orig=g_syncExecOrig;
  if(orig)orig(self,m);
+ // SilverV7 executes the Lua body synchronously on UnityMain.
+ // Drain at most one queued script per UnitySynchronizationContext::Exec frame.
+ drainScriptQueueOnUnityMain();
 }
 
 static bool installMainThreadBootstrap(){
@@ -543,7 +573,25 @@ static const char* coreAbi(){
  return "x86";
 #endif
 }
+static bool queueScriptOnUnityMain(const std::string&name){
+ if(!waitMainDispatcher(5000)){
+  logf("UnityMain script queue unavailable name=%s",name.c_str());
+  return false;
+ }
+ MainScriptTask task;task.name=name;
+ {
+  std::lock_guard<std::mutex>lk(g_scriptQueueMu);
+  g_scriptQueue.push_back(&task);
+ }
+ logf("UnityMain script queued name=%s",name.c_str());
+ // No SynchronizationContext.Post is required here: Exec is already our V7-style
+ // UnityMain bootstrap and runs every player-loop frame.
+ std::unique_lock<std::mutex>lk(task.mu);
+ task.cv.wait(lk,[&]{return task.done;});
+ return true;
+}
+
 static void run(const std::string&name){std::string f=safe(name)?g_base+"/"+name:g_base+"/script.lua";writeText(OUT(),"[AZ ScriptCore V0.7] RUN | "+f+"\n");out("[ENV] package="+g_pkg+" | abi="+coreAbi()+" | images="+std::to_string(Il2cpp::GetImagesFresh().size())+" | gchandle="+(Il2cpp::GcHandleApiResolved()?"OK":"MISSING"));out("[API] Class.fromName | findObjectsFresh | Field | Call.exact/default | Hook | Array | gg");writeText(STATUS(),"RUNNING");int rc=luaL_loadfile(G,f.c_str());if(rc==LUA_OK)rc=lua_pcall(G,0,LUA_MULTRET,0);if(rc!=LUA_OK){const char*e=lua_tostring(G,-1);out(std::string("ERROR | ")+(e?e:"unknown"));lua_pop(G,1);writeText(STATUS(),"ERROR");}else{out("[AZ ScriptCore 0.7] DONE");writeText(STATUS(),"DONE");}lua_settop(G,0);lua_gc(G,LUA_GCCOLLECT,0);}
-void worker(){ensureDir();writeText(STATUS(),"INIT");G=luaL_newstate();if(!G){writeText(STATUS(),"LUA_INIT_FAILED");return;}luaL_openlibs(G);reg(G);installMainThreadBootstrap();writeText(STATUS(),"READY");logf("Lua 5.4 READY | Class Call Hook Array gg | UnityMain bootstrap=%d",g_mainHookInstalled.load()?1:0);for(;;){if(access(REQ(),F_OK)==0){std::string q=readText(REQ(),512);unlink(REQ());while(!q.empty()&&(q.back()=='\n'||q.back()=='\r'||q.back()==' '||q.back()=='\t'))q.pop_back();run(q);}usleep(100000);}}
+void worker(){ensureDir();writeText(STATUS(),"INIT");G=luaL_newstate();if(!G){writeText(STATUS(),"LUA_INIT_FAILED");return;}luaL_openlibs(G);reg(G);installMainThreadBootstrap();writeText(STATUS(),"READY");logf("Lua 5.4 READY | Class Call Hook Array gg | UnityMain bootstrap=%d",g_mainHookInstalled.load()?1:0);for(;;){if(access(REQ(),F_OK)==0){std::string q=readText(REQ(),512);unlink(REQ());while(!q.empty()&&(q.back()=='\n'||q.back()=='\r'||q.back()==' '||q.back()=='\t'))q.pop_back();if(!queueScriptOnUnityMain(q)){out("ERROR | UnityMain script dispatcher unavailable");writeText(STATUS(),"ERROR");}}usleep(100000);}}
 }
 extern "C" void az_lua_worker(){AZLua::worker();}
