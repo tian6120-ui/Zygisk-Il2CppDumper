@@ -5,6 +5,8 @@
 #include <sys/stat.h>
 #include <pthread.h>
 #include <cstring>
+#include <cstdlib>
+#include <cstdio>
 #include <string>
 #include <atomic>
 #include "zygisk_min.hpp"
@@ -84,7 +86,17 @@ static void* nbLoad(const char*path){
 }
 #endif
 
+static bool mapsHas(const char*needle){
+ FILE*f=fopen("/proc/self/maps","r");if(!f)return false;char b[1024];bool ok=false;
+ while(fgets(b,sizeof(b),f)){if(strstr(b,needle)){ok=true;break;}}fclose(f);return ok;
+}
 static void* loadWorker(void*){
+ // Universal mode: stay lightweight in ordinary apps. Only promote to the
+ // full core after this process actually maps IL2CPP.
+ bool seen=false;
+ for(int i=0;i<480;++i){if(mapsHas("libil2cpp.so")){seen=true;break;}usleep(250000);}
+ if(!seen){if(g_ui_fd>=0){close(g_ui_fd);g_ui_fd=-1;}if(g_core_fd>=0){close(g_core_fd);g_core_fd=-1;}return nullptr;}
+ if(g_translated)setenv("AZ_TRANSLATED_GUEST","1",1);
  if(g_ui_fd>=0){
    char p[64];snprintf(p,sizeof(p),"/proc/self/fd/%d",g_ui_fd);
    g_host_ui=dlopen(p,RTLD_NOW|RTLD_LOCAL);close(g_ui_fd);g_ui_fd=-1;
