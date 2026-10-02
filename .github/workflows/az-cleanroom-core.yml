@@ -1,0 +1,69 @@
+name: AZ Cleanroom Core
+
+on:
+  push:
+    branches: [az-core-cleanroom]
+  workflow_dispatch:
+
+jobs:
+  build-arm64:
+    runs-on: windows-latest
+    timeout-minutes: 60
+    steps:
+      - name: Checkout AZ orchestration repo
+        uses: actions/checkout@v4
+        with:
+          ref: az-core-cleanroom
+
+      - name: Checkout upstream open-source Il2CppTool
+        uses: actions/checkout@v4
+        with:
+          repository: 2228293026/Il2CppTool
+          ref: main
+          path: Il2CppTool
+          fetch-depth: 1
+
+      - name: Apply AZ clean-room patch
+        shell: pwsh
+        run: python az/cleanroom_patch.py Il2CppTool
+
+      - name: Resolve Android NDK
+        shell: pwsh
+        run: |
+          $sdk = @($env:ANDROID_HOME, $env:ANDROID_SDK_ROOT) | Where-Object { $_ } | Select-Object -First 1
+          $candidates = @()
+          foreach ($envName in 'ANDROID_NDK_HOME','ANDROID_NDK_ROOT') {
+            $value = [Environment]::GetEnvironmentVariable($envName)
+            if ($value) { $candidates += $value }
+          }
+          if ($sdk) {
+            $ndkRoot = Join-Path $sdk 'ndk'
+            if (Test-Path $ndkRoot) {
+              $candidates += Get-ChildItem $ndkRoot -Directory |
+                Sort-Object Name -Descending | ForEach-Object { $_.FullName }
+            }
+          }
+          $ndk = $candidates | Where-Object { Test-Path (Join-Path $_ 'ndk-build.cmd') } | Select-Object -First 1
+          if (-not $ndk) { throw "No Android NDK found" }
+          "ANDROID_NDK_HOME=$ndk" >> $env:GITHUB_ENV
+          Write-Host "Using NDK $ndk"
+
+      - name: Build
+        shell: pwsh
+        working-directory: Il2CppTool
+        run: .\build.ps1
+
+      - name: Verify ABI
+        shell: pwsh
+        run: |
+          $so = 'Il2CppTool/app/src/main/libs/arm64-v8a/libTool.so'
+          if (-not (Test-Path $so)) { throw "Missing $so" }
+          Write-Host "size=$((Get-Item $so).Length)"
+          Get-FileHash $so -Algorithm SHA256
+
+      - name: Upload
+        uses: actions/upload-artifact@v4
+        with:
+          name: AZ-libTool-arm64
+          path: Il2CppTool/app/src/main/libs/arm64-v8a/libTool.so
+          if-no-files-found: error
