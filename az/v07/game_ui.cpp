@@ -16,10 +16,13 @@
 #include <atomic>
 #include <algorithm>
 #include <ctime>
+#include <dirent.h>
 #include <cmath>
+#include <cstdlib>
 #include "imgui.h"
 #include "imgui_internal.h"
 #include "backends/imgui_impl_opengl3.h"
+#include "zh_glyphs.h"
 
 #define AZTAG "AZV7UI"
 #define AZI(...) __android_log_print(ANDROID_LOG_INFO,AZTAG,__VA_ARGS__)
@@ -47,15 +50,25 @@ std::mutex g_region_mu;
 float g_region[4]={18,90,125,200};
 
 std::vector<char> g_script(256*1024,0);
-std::string g_output,g_status="WAITING",g_base,g_last,g_req,g_out,g_stat,g_ui_cfg;
+std::string g_output,g_status="WAITING",g_base,g_last,g_req,g_out,g_stat,g_ui_cfg,g_scripts_dir;
 double g_poll=0;
 bool g_open=false,g_autoscroll=true,g_center_next=false;
 float g_font_scale=1.25f;
 float g_font_base_px=20.0f;
 int g_font_scale_idx=1;
-ImFont* g_main_font=nullptr;
+int g_language=1;
+int g_page=0;
+float g_accent[3]={0.58f,0.04f,0.08f};
+float g_bg[3]={0.045f,0.05f,0.06f};
+float g_text[3]={0.94f,0.94f,0.95f};
+float g_panel_alpha=0.94f;
+char g_custom_dir[512]="/sdcard/Download";
 const float kFontScales[]={1.00f,1.25f,1.50f,1.75f,2.00f,2.25f,2.50f};
 const char* kFontScaleLabels[]={"100%","125%","150%","175%","200%","225%","250%"};
+struct LocalScript{std::string name,path;};
+std::vector<LocalScript> g_local_scripts;
+int g_local_selected=-1;
+std::string g_local_note;
 
 std::string pkg(){
  FILE*f=fopen("/proc/self/cmdline","rb");if(!f)return"unknown";char b[256]{};size_t n=fread(b,1,sizeof(b)-1,f);fclose(f);
@@ -63,7 +76,7 @@ std::string pkg(){
 }
 void paths(){
  if(!g_base.empty())return;std::string files="/data/user/0/"+pkg()+"/files";g_base=files+"/AZTool";mkdir(files.c_str(),0700);mkdir(g_base.c_str(),0700);
- g_last=g_base+"/last.lua";g_req=g_base+"/script.req";g_out=g_base+"/script.out";g_stat=g_base+"/script.status";g_ui_cfg=g_base+"/ui.cfg";
+ g_last=g_base+"/last.lua";g_req=g_base+"/script.req";g_out=g_base+"/script.out";g_stat=g_base+"/script.status";g_ui_cfg=g_base+"/ui.cfg";g_scripts_dir=g_base+"/scripts";mkdir(g_scripts_dir.c_str(),0700);
 }
 std::string rf(const std::string&p,size_t lim=2*1024*1024){
  FILE*f=fopen(p.c_str(),"rb");if(!f)return{};std::string s;char b[4096];while(!feof(f)&&s.size()<lim){size_t n=fread(b,1,sizeof(b),f);if(!n)break;if(s.size()+n>lim)n=lim-s.size();s.append(b,n);}fclose(f);return s;
@@ -74,54 +87,85 @@ void poll(){
  double n=now();if(n-g_poll<.2)return;g_poll=n;paths();g_status=rf(g_stat,4096);while(!g_status.empty()&&(g_status.back()=='\n'||g_status.back()=='\r'))g_status.pop_back();g_output=rf(g_out);
 }
 void loadLast(){paths();auto s=rf(g_last,g_script.size()-1);memset(g_script.data(),0,g_script.size());if(!s.empty())memcpy(g_script.data(),s.data(),std::min(s.size(),g_script.size()-1));}
-int cfgInt(const std::string&s,const char*key,int def){
- auto p=s.find(key);if(p==std::string::npos)return def;p+=strlen(key);return atoi(s.c_str()+p);
+std::string cfgValue(const std::string&s,const char*key){
+ auto p=s.find(key);if(p==std::string::npos)return{};p+=strlen(key);auto e=s.find('\n',p);return s.substr(p,e==std::string::npos?s.size()-p:e-p);
 }
-float cfgFloat(const std::string&s,const char*key,float def){
- auto p=s.find(key);if(p==std::string::npos)return def;p+=strlen(key);return strtof(s.c_str()+p,nullptr);
+void parse3(const std::string&v,float out[3]){
+ float a,b,c;if(sscanf(v.c_str(),"%f,%f,%f",&a,&b,&c)==3){out[0]=std::clamp(a,0.f,1.f);out[1]=std::clamp(b,0.f,1.f);out[2]=std::clamp(c,0.f,1.f);}
 }
 void loadUiConfig(){
  paths();auto s=rf(g_ui_cfg,4096);if(s.empty())return;
- float v=cfgFloat(s,"fontScale=",1.25f);
- int best=1;float d=1000.f;
- for(int i=0;i<7;++i){float nd=fabsf(kFontScales[i]-v);if(nd<d){d=nd;best=i;}}
- g_font_scale_idx=best;g_font_scale=kFontScales[best];
+ auto fs=cfgValue(s,"fontScale=");if(!fs.empty()){
+  float v=strtof(fs.c_str(),nullptr);int best=1;float d=1000.f;
+  for(int i=0;i<7;++i){float nd=fabsf(kFontScales[i]-v);if(nd<d){d=nd;best=i;}}
+  g_font_scale_idx=best;g_font_scale=kFontScales[best];
+ }
+ auto la=cfgValue(s,"language=");if(!la.empty())g_language=std::clamp(atoi(la.c_str()),0,1);
+ auto al=cfgValue(s,"alpha=");if(!al.empty())g_panel_alpha=std::clamp(strtof(al.c_str(),nullptr),0.25f,1.0f);
+ auto ac=cfgValue(s,"accent=");if(!ac.empty())parse3(ac,g_accent);
+ auto bg=cfgValue(s,"bg=");if(!bg.empty())parse3(bg,g_bg);
+ auto tx=cfgValue(s,"text=");if(!tx.empty())parse3(tx,g_text);
+ auto cd=cfgValue(s,"customDir=");if(!cd.empty()){strncpy(g_custom_dir,cd.c_str(),sizeof(g_custom_dir)-1);g_custom_dir[sizeof(g_custom_dir)-1]=0;}
 }
 void saveUiConfig(){
- paths();char b[160];
- snprintf(b,sizeof(b),"fontScale=%.2f\n",g_font_scale);
+ paths();char b[1200];
+ snprintf(b,sizeof(b),
+  "fontScale=%.2f\nlanguage=%d\nalpha=%.3f\naccent=%.4f,%.4f,%.4f\nbg=%.4f,%.4f,%.4f\ntext=%.4f,%.4f,%.4f\ncustomDir=%s\n",
+  g_font_scale,g_language,g_panel_alpha,g_accent[0],g_accent[1],g_accent[2],g_bg[0],g_bg[1],g_bg[2],g_text[0],g_text[1],g_text[2],g_custom_dir);
  wf(g_ui_cfg,b);
 }
-bool fileExists(const char*p){return p&&access(p,R_OK)==0;}
-const char* firstFont(const char*const*list){
- for(int i=0;list[i];++i)if(fileExists(list[i]))return list[i];
- return nullptr;
-}
-const char* robotoMediumPath(){
- static const char*const p[]={
-  "/system/fonts/Roboto-Medium.ttf",
-  "/system/fonts/Roboto-Regular.ttf",
-  "/system/fonts/NotoSans-Regular.ttf",
-  nullptr
- };
- return firstFont(p);
-}
-void prepareV7FontOnce(){
- ImGuiIO&io=ImGui::GetIO();
- const float px=g_font_base_px;
- const char*roboto=robotoMediumPath();
- io.Fonts->Clear();
- ImFontConfig base{};base.OversampleH=3;base.OversampleV=2;base.PixelSnapH=false;
- g_main_font=roboto?io.Fonts->AddFontFromFileTTF(roboto,px,&base,io.Fonts->GetGlyphRangesDefault()):io.Fonts->AddFontDefault(&base);
- if(!g_main_font)g_main_font=io.Fonts->AddFontDefault();
- io.FontDefault=g_main_font;
- g_font_scale=kFontScales[std::clamp(g_font_scale_idx,0,6)];
- io.FontGlobalScale=g_font_scale;
- AZI("V7 font ready base=%.1f scale=%.2f font=%s",px,g_font_scale,roboto?roboto:"builtin");
-}
-void applyV7FontScaleLive(){
+void applyFontScale(){
+ if(!ImGui::GetCurrentContext())return;
  g_font_scale=kFontScales[std::clamp(g_font_scale_idx,0,6)];
  ImGui::GetIO().FontGlobalScale=g_font_scale;
+}
+const char* L(const char*en,const char*zh){return g_language?zh:en;}
+
+int b64v(char c){
+ if(c>='A'&&c<='Z')return c-'A';if(c>='a'&&c<='z')return c-'a'+26;if(c>='0'&&c<='9')return c-'0'+52;if(c=='+')return 62;if(c=='/')return 63;return -1;
+}
+std::vector<unsigned char> decodeB64(const char*s){
+ std::vector<unsigned char>o;o.reserve(AZ_ZH_PACKED_BYTES);int val=0,bits=-8;
+ for(;*s;++s){int d=b64v(*s);if(d<0)continue;val=(val<<6)|d;bits+=6;if(bits>=0){o.push_back((unsigned char)((val>>bits)&0xff));bits-=8;}}
+ return o;
+}
+void installZhGlyphs(ImFont*font){
+ if(!font)return;ImGuiIO&io=ImGui::GetIO();std::vector<int> rects;rects.reserve(AZ_ZH_GLYPH_COUNT);
+ for(int i=0;i<AZ_ZH_GLYPH_COUNT;++i)rects.push_back(io.Fonts->AddCustomRectFontGlyph(font,(ImWchar)AZ_ZH_GLYPHS[i].code,AZ_ZH_W,AZ_ZH_H,(float)AZ_ZH_W,ImVec2(0,-1)));
+ unsigned char*pixels=nullptr;int tw=0,th=0;io.Fonts->GetTexDataAsAlpha8(&pixels,&tw,&th);auto packed=decodeB64(AZ_ZH_DATA_B64);
+ if(!pixels||packed.size()<AZ_ZH_PACKED_BYTES)return;
+ for(int i=0;i<AZ_ZH_GLYPH_COUNT;++i){
+  auto*r=io.Fonts->GetCustomRectByIndex(rects[i]);const auto&m=AZ_ZH_GLYPHS[i];
+  for(int p=0;p<AZ_ZH_W*AZ_ZH_H;++p){unsigned char b=packed[m.offset+(p>>2)];int shift=6-2*(p&3);unsigned char a=(unsigned char)(((b>>shift)&3)*85);int x=p%AZ_ZH_W,y=p/AZ_ZH_W;unsigned char&dst=pixels[(r->Y+y)*tw+r->X+x];if(a>dst)dst=a;}
+ }
+ AZI("Built-in Chinese UI glyphs installed count=%d",AZ_ZH_GLYPH_COUNT);
+}
+
+bool luaName(const char*n){if(!n)return false;size_t l=strlen(n);return l>4&&strcasecmp(n+l-4,".lua")==0;}
+void addScriptPath(const std::string&p,const std::string&name){
+ for(auto&s:g_local_scripts)if(s.path==p)return;
+ if(g_local_scripts.size()<400)g_local_scripts.push_back({name,p});
+}
+void scanDir(const std::string&dir,int depth){
+ DIR*d=opendir(dir.c_str());if(!d)return;dirent*e;
+ while((e=readdir(d))){if(!strcmp(e->d_name,".")||!strcmp(e->d_name,".."))continue;std::string p=dir+"/"+e->d_name;struct stat st{};if(stat(p.c_str(),&st)!=0)continue;
+  if(S_ISREG(st.st_mode)&&luaName(e->d_name)&&access(p.c_str(),R_OK)==0)addScriptPath(p,e->d_name);
+  else if(depth>0&&S_ISDIR(st.st_mode)&&e->d_name[0]!='.')scanDir(p,depth-1);
+  if(g_local_scripts.size()>=400)break;
+ }
+ closedir(d);
+}
+void refreshLocalScripts(){
+ paths();g_local_scripts.clear();g_local_selected=-1;g_local_note.clear();
+ scanDir(g_scripts_dir,1);scanDir("/sdcard/Download/AZScript",1);scanDir("/sdcard/Download",0);scanDir("/storage/emulated/0/Download/AZScript",1);scanDir("/data/local/tmp/AZScript",1);
+ if(g_custom_dir[0])scanDir(g_custom_dir,1);
+ std::sort(g_local_scripts.begin(),g_local_scripts.end(),[](const LocalScript&a,const LocalScript&b){return a.name<b.name;});
+ if(g_local_scripts.empty())g_local_note=L("No readable .lua files found.","未找到可读 Lua 文件");
+ else {char b[96];snprintf(b,sizeof(b),g_language?"已找到 %zu 个脚本":"Found %zu scripts",g_local_scripts.size());g_local_note=b;}
+}
+bool loadScriptPath(const std::string&p){
+ auto s=rf(p,g_script.size());if(s.empty()){g_local_note=L("Read failed or file is empty.","读取失败或文件为空");return false;}
+ memset(g_script.data(),0,g_script.size());memcpy(g_script.data(),s.data(),std::min(s.size(),g_script.size()-1));g_local_note=p;return true;
 }
 void save(){paths();wf(g_last,std::string(g_script.data()));}
 void run(){save();wf(g_req,"last.lua\n");}
@@ -155,9 +199,31 @@ void input(){
   }
  }
 }
+ImVec4 mix3(const float c[3],float mul,float a){return ImVec4(std::clamp(c[0]*mul,0.f,1.f),std::clamp(c[1]*mul,0.f,1.f),std::clamp(c[2]*mul,0.f,1.f),a);}
+void applyTheme(){
+ ImGuiStyle&s=ImGui::GetStyle();auto*c=s.Colors;
+ c[ImGuiCol_Text]=ImVec4(g_text[0],g_text[1],g_text[2],1);
+ c[ImGuiCol_TextDisabled]=mix3(g_text,.60f,1);
+ c[ImGuiCol_WindowBg]=ImVec4(g_bg[0],g_bg[1],g_bg[2],g_panel_alpha);
+ c[ImGuiCol_ChildBg]=ImVec4(g_bg[0],g_bg[1],g_bg[2],std::min(1.f,g_panel_alpha*.82f));
+ c[ImGuiCol_PopupBg]=ImVec4(g_bg[0],g_bg[1],g_bg[2],std::min(1.f,g_panel_alpha+.04f));
+ c[ImGuiCol_Border]=mix3(g_text,.28f,.55f);
+ c[ImGuiCol_FrameBg]=mix3(g_bg,1.75f,.92f);c[ImGuiCol_FrameBgHovered]=mix3(g_bg,2.10f,.96f);c[ImGuiCol_FrameBgActive]=mix3(g_bg,2.35f,.98f);
+ c[ImGuiCol_TitleBg]=mix3(g_accent,.58f,1);c[ImGuiCol_TitleBgActive]=mix3(g_accent,.90f,1);
+ c[ImGuiCol_Button]=mix3(g_accent,.68f,1);c[ImGuiCol_ButtonHovered]=mix3(g_accent,1.00f,1);c[ImGuiCol_ButtonActive]=mix3(g_accent,1.15f,1);
+ c[ImGuiCol_Header]=mix3(g_accent,.60f,.88f);c[ImGuiCol_HeaderHovered]=mix3(g_accent,.90f,.95f);c[ImGuiCol_HeaderActive]=mix3(g_accent,1.05f,1);
+ c[ImGuiCol_CheckMark]=mix3(g_accent,1.35f,1);c[ImGuiCol_SliderGrab]=mix3(g_accent,1.15f,1);c[ImGuiCol_SliderGrabActive]=mix3(g_accent,1.35f,1);
+ c[ImGuiCol_Tab]=mix3(g_bg,1.5f,1);c[ImGuiCol_TabHovered]=mix3(g_accent,.85f,1);c[ImGuiCol_TabActive]=mix3(g_accent,.62f,1);
+}
 void style(){
- ImGuiStyle&s=ImGui::GetStyle();s.WindowRounding=10;s.FrameRounding=7;s.ChildRounding=7;s.ScrollbarRounding=7;s.ScaleAllSizes(1.3f);
- auto*c=s.Colors;c[ImGuiCol_WindowBg]=ImVec4(.045f,.05f,.06f,.96f);c[ImGuiCol_TitleBgActive]=ImVec4(.48f,.02f,.05f,1);c[ImGuiCol_Button]=ImVec4(.34f,.035f,.065f,1);c[ImGuiCol_ButtonHovered]=ImVec4(.60f,.045f,.09f,1);
+ ImGuiStyle&s=ImGui::GetStyle();s.WindowRounding=10;s.FrameRounding=7;s.ChildRounding=7;s.ScrollbarRounding=7;s.TabRounding=7;s.ScaleAllSizes(1.3f);applyTheme();
+}
+void presetTheme(int id){
+ if(id==0){g_accent[0]=.58f;g_accent[1]=.04f;g_accent[2]=.08f;g_bg[0]=.045f;g_bg[1]=.05f;g_bg[2]=.06f;}
+ if(id==1){g_accent[0]=.10f;g_accent[1]=.35f;g_accent[2]=.88f;g_bg[0]=.035f;g_bg[1]=.045f;g_bg[2]=.07f;}
+ if(id==2){g_accent[0]=.08f;g_accent[1]=.62f;g_accent[2]=.34f;g_bg[0]=.035f;g_bg[1]=.06f;g_bg[2]=.05f;}
+ if(id==3){g_accent[0]=.55f;g_accent[1]=.20f;g_accent[2]=.78f;g_bg[0]=.055f;g_bg[1]=.04f;g_bg[2]=.07f;}
+ applyTheme();saveUiConfig();
 }
 void region(float x1,float y1,float x2,float y2){std::lock_guard<std::mutex>lk(g_region_mu);g_region[0]=x1;g_region[1]=y1;g_region[2]=x2;g_region[3]=y2;}
 void draw(int w,int h){
@@ -168,42 +234,64 @@ void draw(int w,int h){
    x1=std::min(x1,ImGui::GetWindowPos().x);y1=std::min(y1,ImGui::GetWindowPos().y);x2=std::max(x2,ImGui::GetWindowPos().x+ImGui::GetWindowSize().x);y2=std::max(y2,ImGui::GetWindowPos().y+ImGui::GetWindowSize().y);
  }ImGui::End();
  if(g_open){
-  float pw=std::min((float)w-70.0f,std::max(680.0f,w*.66f));
-  float ph=std::min((float)h-70.0f,std::max(540.0f,h*.76f));
+  float pw=std::min((float)w-70.0f,std::max(760.0f,w*.70f));float ph=std::min((float)h-60.0f,std::max(580.0f,h*.80f));
   if(g_center_next){ImGui::SetNextWindowPos(ImVec2(w*.5f,h*.5f),ImGuiCond_Always,ImVec2(.5f,.5f));g_center_next=false;}
   ImGui::SetNextWindowSize(ImVec2(pw,ph),ImGuiCond_Once);
-  const char* title="AZ ScriptCore V0.8";
-  if(ImGui::Begin(title,&g_open,ImGuiWindowFlags_NoSavedSettings)){
+  if(ImGui::Begin(g_language?"AZ ScriptCore - 中文":"AZ ScriptCore",&g_open,ImGuiWindowFlags_NoSavedSettings)){
    auto p=ImGui::GetWindowPos(),s=ImGui::GetWindowSize();x1=std::min(x1,p.x);y1=std::min(y1,p.y);x2=std::max(x2,p.x+s.x);y2=std::max(y2,p.y+s.y);
-   ImGui::Text("Status: %s",g_status.empty()?"WAITING":g_status.c_str());ImGui::SameLine();ImGui::TextDisabled("| %s",pkg().c_str());
-   if(ImGui::BeginTabBar("tabs")){
-    if(ImGui::BeginTabItem("Script")){
-     if(ImGui::Button("Paste & Run")){auto s=clipGet();if(!s.empty()){memset(g_script.data(),0,g_script.size());memcpy(g_script.data(),s.data(),std::min(s.size(),g_script.size()-1));run();}}
-     ImGui::SameLine();if(ImGui::Button("Run"))run();ImGui::SameLine();if(ImGui::Button("Save"))save();ImGui::SameLine();if(ImGui::Button("Load Last"))loadLast();ImGui::SameLine();if(ImGui::Button("Copy"))clipSet(std::string(g_script.data()));
-     ImGui::Separator();ImGui::InputTextMultiline("##lua",g_script.data(),g_script.size(),ImVec2(-1,-1),ImGuiInputTextFlags_AllowTabInput);ImGui::EndTabItem();
+   ImGui::Text("%s: %s",L("Status","状态"),g_status.empty()?"WAITING":g_status.c_str());ImGui::SameLine();ImGui::TextDisabled("| %s",pkg().c_str());
+   if(ImGui::Button(L("Script","脚本")))g_page=0;ImGui::SameLine();
+   if(ImGui::Button(L("Local Scripts","本地脚本"))){g_page=1;if(g_local_scripts.empty())refreshLocalScripts();}ImGui::SameLine();
+   if(ImGui::Button(L("Theme","主题")))g_page=2;
+   ImGui::Separator();
+
+   if(g_page==0){
+    if(ImGui::Button(L("Paste & Run","粘贴并运行"))){auto v=clipGet();if(!v.empty()){memset(g_script.data(),0,g_script.size());memcpy(g_script.data(),v.data(),std::min(v.size(),g_script.size()-1));run();}}
+    ImGui::SameLine();if(ImGui::Button(L("Run","运行")))run();
+    ImGui::SameLine();if(ImGui::Button(L("Save","保存")))save();
+    ImGui::SameLine();if(ImGui::Button(L("Clear","清空"))){memset(g_script.data(),0,g_script.size());}
+    float avail=ImGui::GetContentRegionAvail().y;float editH=std::max(180.f,avail*.48f);
+    ImGui::TextUnformatted(L("Script content","脚本内容"));
+    ImGui::InputTextMultiline("##lua",g_script.data(),g_script.size(),ImVec2(-1,editH),ImGuiInputTextFlags_AllowTabInput);
+    ImGui::Separator();
+    ImGui::TextUnformatted("OUT / ");ImGui::SameLine();ImGui::TextUnformatted(L("Run result","运行结果"));
+    if(ImGui::Button(L("Copy All","复制全部")))clipSet(g_output);ImGui::SameLine();
+    if(ImGui::Button(L("Clear Output","清空输出"))){wf(g_out,"");g_output.clear();}ImGui::SameLine();
+    ImGui::Checkbox(L("Auto-scroll","自动滚动"),&g_autoscroll);
+    ImGui::BeginChild("out",ImVec2(0,0),true,ImGuiWindowFlags_HorizontalScrollbar);ImGui::TextUnformatted(g_output.c_str(),g_output.c_str()+g_output.size());if(g_autoscroll)ImGui::SetScrollHereY(1);ImGui::EndChild();
+   }else if(g_page==1){
+    ImGui::TextWrapped("%s: %s",L("Built-in folder","内置目录"),g_scripts_dir.c_str());
+    ImGui::TextUnformatted(L("Custom folder","自定义目录"));ImGui::SameLine();ImGui::SetNextItemWidth(-170);ImGui::InputText("##customdir",g_custom_dir,sizeof(g_custom_dir));ImGui::SameLine();
+    if(ImGui::Button(L("Refresh","刷新"))){saveUiConfig();refreshLocalScripts();}
+    ImGui::TextDisabled("%s",g_local_note.c_str());
+    float listH=std::max(260.f,ImGui::GetContentRegionAvail().y-110.f);
+    ImGui::BeginChild("local_list",ImVec2(0,listH),true);
+    for(size_t i=0;i<g_local_scripts.size();++i){
+      bool sel=(int)i==g_local_selected;std::string label=g_local_scripts[i].name+"##"+std::to_string(i);
+      if(ImGui::Selectable(label.c_str(),sel)){g_local_selected=(int)i;g_local_note=g_local_scripts[i].path;}
     }
-    if(ImGui::BeginTabItem("Output")){
-     if(ImGui::Button("Copy All"))clipSet(g_output);ImGui::SameLine();if(ImGui::Button("Clear")){wf(g_out,"");g_output.clear();}ImGui::SameLine();ImGui::Checkbox("Auto-scroll",&g_autoscroll);
-     ImGui::Separator();ImGui::BeginChild("out",ImVec2(0,0),true,ImGuiWindowFlags_HorizontalScrollbar);ImGui::TextUnformatted(g_output.c_str(),g_output.c_str()+g_output.size());if(g_autoscroll)ImGui::SetScrollHereY(1);ImGui::EndChild();ImGui::EndTabItem();
+    ImGui::EndChild();
+    if(g_local_selected>=0&&g_local_selected<(int)g_local_scripts.size()){
+      const auto&s=g_local_scripts[g_local_selected];ImGui::TextWrapped("%s: %s",L("Selected","已选择"),s.path.c_str());
+      if(ImGui::Button(L("Load to editor","加载到编辑器"))){if(loadScriptPath(s.path))g_page=0;}
+      ImGui::SameLine();if(ImGui::Button(L("Run directly","直接运行"))){if(loadScriptPath(s.path)){run();g_page=0;}}
     }
-    if(ImGui::BeginTabItem("Info")){
-      ImGui::Text("V7 Java Overlay: CONNECTED");ImGui::Text("Surface: %d x %d",w,h);
-      ImGui::Separator();
-      ImGui::Text("Font size");
-      ImGui::SetNextItemWidth(210.0f);
-      if(ImGui::BeginCombo("##scale_dropdown",kFontScaleLabels[g_font_scale_idx])){
-        for(int i=0;i<7;++i){
-          bool sel=(i==g_font_scale_idx);
-          if(ImGui::Selectable(kFontScaleLabels[i],sel)){g_font_scale_idx=i;applyV7FontScaleLive();saveUiConfig();}
-          if(sel)ImGui::SetItemDefaultFocus();
-        }
-        ImGui::EndCombo();
-      }
-      ImGui::Text("Rendered font: %.0f px",std::round(g_font_base_px*g_font_scale));
-      ImGui::TextWrapped("Copy Lua -> Paste & Run -> Output -> Copy All");
-      ImGui::EndTabItem();
+   }else{
+    ImGui::TextUnformatted(L("Theme settings","主题设置"));
+    ImGui::TextUnformatted(L("Language","界面语言"));ImGui::SameLine();ImGui::SetNextItemWidth(180);
+    if(ImGui::BeginCombo("##lang",g_language?"中文":"English")){
+      if(ImGui::Selectable("English",g_language==0)){g_language=0;saveUiConfig();}
+      if(ImGui::Selectable("中文",g_language==1)){g_language=1;saveUiConfig();}
+      ImGui::EndCombo();
     }
-    ImGui::EndTabBar();
+    ImGui::TextUnformatted(L("Font size","字体大小"));ImGui::SameLine();ImGui::SetNextItemWidth(180);
+    if(ImGui::BeginCombo("##scale",kFontScaleLabels[g_font_scale_idx])){for(int i=0;i<7;++i){bool sel=i==g_font_scale_idx;if(ImGui::Selectable(kFontScaleLabels[i],sel)){g_font_scale_idx=i;applyFontScale();saveUiConfig();}if(sel)ImGui::SetItemDefaultFocus();}ImGui::EndCombo();}
+    if(ImGui::Button(L("Dark Red","深红")))presetTheme(0);ImGui::SameLine();if(ImGui::Button(L("Blue","蓝色")))presetTheme(1);ImGui::SameLine();if(ImGui::Button(L("Green","绿色")))presetTheme(2);ImGui::SameLine();if(ImGui::Button(L("Purple","紫色")))presetTheme(3);
+    if(ImGui::ColorEdit3(L("Accent","强调色"),g_accent)){applyTheme();saveUiConfig();}
+    if(ImGui::ColorEdit3(L("Background","背景色"),g_bg)){applyTheme();saveUiConfig();}
+    if(ImGui::ColorEdit3(L("Text","文字色"),g_text)){applyTheme();saveUiConfig();}
+    if(ImGui::SliderFloat(L("Window opacity","窗口透明度"),&g_panel_alpha,.25f,1.0f,"%.2f")){applyTheme();saveUiConfig();}
+    if(ImGui::Button(L("Restore default","恢复默认"))){g_accent[0]=.58f;g_accent[1]=.04f;g_accent[2]=.08f;g_bg[0]=.045f;g_bg[1]=.05f;g_bg[2]=.06f;g_text[0]=g_text[1]=g_text[2]=.94f;g_panel_alpha=.94f;applyTheme();saveUiConfig();}
    }
   }ImGui::End();
  }
@@ -222,9 +310,11 @@ bool setup(GL&g,ANativeWindow*w){
    ImGuiIO&io=ImGui::GetIO();io.IniFilename=nullptr;
    int sw=ANativeWindow_getWidth(w),sh=ANativeWindow_getHeight(w);int shortSide=std::max(1,std::min(sw,sh));
    g_font_base_px=std::clamp(shortSide/45.0f,18.0f,30.0f);
-   loadUiConfig();
-   prepareV7FontOnce();
-   style();ImGui_ImplOpenGL3_Init("#version 300 es");loadLast();g.imgui=true;
+   ImFontConfig fc;fc.SizePixels=g_font_base_px;fc.OversampleH=2;fc.OversampleV=2;fc.PixelSnapH=false;
+   io.Fonts->Clear();io.FontDefault=io.Fonts->AddFontDefault(&fc);
+   installZhGlyphs(io.FontDefault);
+   loadUiConfig();applyFontScale();
+   style();ImGui_ImplOpenGL3_Init("#version 300 es");loadLast();refreshLocalScripts();g.imgui=true;
    AZI("Font manager ready base=%.1f scale=%.2f",g_font_base_px,g_font_scale);
  }return true;
 }
@@ -248,7 +338,8 @@ jboolean JNICALL touch(JNIEnv*,jclass,jint a,jfloat x,jfloat y){push({0,(int)a,0
 void JNICALL scroll(JNIEnv*,jclass,jfloat v){push({1,0,0,0,0,v,false,false,false,false,{}});}
 void JNICALL longPress(JNIEnv*,jclass,jfloat x,jfloat y){push({0,0,0,x,y,0,false,false,false,false,{}});}
 void JNICALL touchRegion(JNIEnv*e,jclass,jfloatArray a){if(!a||e->GetArrayLength(a)<4)return;float r[4];{std::lock_guard<std::mutex>lk(g_region_mu);memcpy(r,g_region,sizeof(r));}e->SetFloatArrayRegion(a,0,4,r);}
-void JNICALL theme(JNIEnv*e,jclass,jintArray a){if(!a)return;jsize n=e->GetArrayLength(a);std::vector<jint>v((size_t)n,0xff15171b);if(n>0)v[0]=0xff15171b;if(n>1)v[1]=0xff8a1020;if(n>2)v[2]=0xffffffff;if(n>3)v[3]=0xffb6b8bd;e->SetIntArrayRegion(a,0,n,v.data());}
+jint argb(const float c[3],float a=1.f){int A=(int)(std::clamp(a,0.f,1.f)*255+.5f),R=(int)(std::clamp(c[0],0.f,1.f)*255+.5f),G=(int)(std::clamp(c[1],0.f,1.f)*255+.5f),B=(int)(std::clamp(c[2],0.f,1.f)*255+.5f);return (jint)((A<<24)|(R<<16)|(G<<8)|B);}
+void JNICALL theme(JNIEnv*e,jclass,jintArray a){if(!a)return;jsize n=e->GetArrayLength(a);std::vector<jint>v((size_t)n,argb(g_bg,g_panel_alpha));if(n>0)v[0]=argb(g_bg,g_panel_alpha);if(n>1)v[1]=argb(g_accent,1);if(n>2)v[2]=argb(g_text,1);if(n>3)v[3]=argb(g_text,.72f);e->SetIntArrayRegion(a,0,n,v.data());}
 void JNICALL addChar(JNIEnv*,jclass,jint c){push({2,0,(int)c,0,0,0,false,false,false,false,{}});}
 void JNICALL commit(JNIEnv*e,jclass,jstring js){if(!js)return;const char*p=e->GetStringUTFChars(js,nullptr);std::string s=p?p:"";if(p)e->ReleaseStringUTFChars(js,p);Ev v{};v.t=3;v.txt=std::move(s);push(std::move(v));}
 void JNICALL clearID(JNIEnv*,jclass){if(ImGui::GetCurrentContext())ImGui::ClearActiveID();}
