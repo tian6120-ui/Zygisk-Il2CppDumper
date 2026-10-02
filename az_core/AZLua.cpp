@@ -812,6 +812,758 @@ int l_call_pointer(lua_State* L) {
     return 1;
 }
 
+
+// ===== AZ Core v0.2 extensions =====
+
+Il2CppClass* resolveClassArg(lua_State* L, int idx) {
+    if (auto* c = static_cast<LuaClass*>(luaL_testudata(L, idx, MT_CLASS))) {
+        return c->klass;
+    }
+    if (lua_type(L, idx) == LUA_TSTRING) {
+        return Il2cpp::FindClass(lua_tostring(L, idx));
+    }
+    return nullptr;
+}
+
+Il2CppType* effectiveValueType(Il2CppClass* klass) {
+    if (!klass) return nullptr;
+    if (Il2cpp::GetClassIsEnum(klass)) {
+        auto* base = Il2cpp::GetEnumBaseType(klass);
+        if (base) return base;
+    }
+    return Il2cpp::GetClassType(klass);
+}
+
+bool writeLuaPrimitiveToRaw(lua_State* L, int idx, Il2CppType* type, void* out, size_t capacity) {
+    if (!type || !out) return false;
+
+    auto need = [&](size_t n) { return capacity >= n; };
+    switch (type->type) {
+        case IL2CPP_TYPE_BOOLEAN:
+            if (!need(1)) return false;
+            *static_cast<uint8_t*>(out) = lua_toboolean(L, idx) ? 1 : 0;
+            return true;
+        case IL2CPP_TYPE_I1:
+            if (!need(1)) return false;
+            *static_cast<int8_t*>(out) = static_cast<int8_t>(luaL_checkinteger(L, idx));
+            return true;
+        case IL2CPP_TYPE_U1:
+            if (!need(1)) return false;
+            *static_cast<uint8_t*>(out) = static_cast<uint8_t>(luaL_checkinteger(L, idx));
+            return true;
+        case IL2CPP_TYPE_I2:
+            if (!need(2)) return false;
+            *static_cast<int16_t*>(out) = static_cast<int16_t>(luaL_checkinteger(L, idx));
+            return true;
+        case IL2CPP_TYPE_U2:
+        case IL2CPP_TYPE_CHAR:
+            if (!need(2)) return false;
+            *static_cast<uint16_t*>(out) = static_cast<uint16_t>(luaL_checkinteger(L, idx));
+            return true;
+        case IL2CPP_TYPE_I4:
+            if (!need(4)) return false;
+            *static_cast<int32_t*>(out) = static_cast<int32_t>(luaL_checkinteger(L, idx));
+            return true;
+        case IL2CPP_TYPE_U4:
+            if (!need(4)) return false;
+            *static_cast<uint32_t*>(out) = static_cast<uint32_t>(luaL_checkinteger(L, idx));
+            return true;
+        case IL2CPP_TYPE_I8:
+        case IL2CPP_TYPE_I:
+            if (!need(sizeof(int64_t))) return false;
+            *static_cast<int64_t*>(out) = static_cast<int64_t>(luaL_checkinteger(L, idx));
+            return true;
+        case IL2CPP_TYPE_U8:
+        case IL2CPP_TYPE_U:
+            if (!need(sizeof(uint64_t))) return false;
+            *static_cast<uint64_t*>(out) = static_cast<uint64_t>(luaL_checkinteger(L, idx));
+            return true;
+        case IL2CPP_TYPE_R4:
+            if (!need(sizeof(float))) return false;
+            *static_cast<float*>(out) = static_cast<float>(luaL_checknumber(L, idx));
+            return true;
+        case IL2CPP_TYPE_R8:
+            if (!need(sizeof(double))) return false;
+            *static_cast<double*>(out) = static_cast<double>(luaL_checknumber(L, idx));
+            return true;
+        default:
+            return false;
+    }
+}
+
+Il2CppObject* boxDefaultForType(Il2CppType* type) {
+    if (!type) return nullptr;
+    auto* klass = type->getClass();
+    if (!klass || !Il2cpp::GetClassIsValueType(klass)) return nullptr;
+
+    const int32_t size = Il2cpp::GetClassValueSize(klass);
+    if (size <= 0 || size > 4096) return nullptr;
+    std::vector<uint8_t> zero(static_cast<size_t>(size), 0);
+    return Il2cpp::GetBoxedValue(klass, zero.data());
+}
+
+bool tableHasBoolField(lua_State* L, int idx, const char* key) {
+    if (!lua_istable(L, idx)) return false;
+    idx = lua_absindex(L, idx);
+    lua_getfield(L, idx, key);
+    bool v = lua_toboolean(L, -1);
+    lua_pop(L, 1);
+    return v;
+}
+
+lua_Integer tableIntegerField(lua_State* L, int idx, const char* key, lua_Integer fallback = 0) {
+    if (!lua_istable(L, idx)) return fallback;
+    idx = lua_absindex(L, idx);
+    lua_getfield(L, idx, key);
+    lua_Integer v = lua_isinteger(L, -1) ? lua_tointeger(L, -1) : fallback;
+    lua_pop(L, 1);
+    return v;
+}
+
+int l_instance_allocate(lua_State* L) {
+    auto* klass = resolveClassArg(L, 1);
+    if (!klass) return luaL_error(L, "AZ: Instance.allocate class not found");
+    auto* obj = Il2cpp::NewObject(klass);
+    if (!obj) {
+        lua_pushnil(L);
+        return 1;
+    }
+    return pushInstance(L, obj);
+}
+
+int l_instance_box(lua_State* L) {
+    auto* klass = resolveClassArg(L, 1);
+    if (!klass) return luaL_error(L, "AZ: Instance.box class not found");
+    if (!Il2cpp::GetClassIsValueType(klass)) {
+        return luaL_error(L, "AZ: Instance.box target is not a value type");
+    }
+
+    const int32_t size = Il2cpp::GetClassValueSize(klass);
+    if (size <= 0 || size > 4096) {
+        return luaL_error(L, "AZ: invalid value size: %d", size);
+    }
+
+    std::vector<uint8_t> raw(static_cast<size_t>(size), 0);
+    if (!lua_isnoneornil(L, 2)) {
+        if (auto* inst = static_cast<LuaInstance*>(luaL_testudata(L, 2, MT_INSTANCE))) {
+            auto* obj = getInstanceObject(inst);
+            if (!obj) return luaL_error(L, "AZ: source boxed object is no longer alive");
+            auto* sourceClass = Il2cpp::GetObjectClass(obj);
+            if (sourceClass != klass) return luaL_error(L, "AZ: boxed source type mismatch");
+            void* unboxed = Il2cpp::GetUnboxedValue(obj);
+            if (!unboxed) return luaL_error(L, "AZ: failed to unbox source value");
+            std::memcpy(raw.data(), unboxed, static_cast<size_t>(size));
+        } else {
+            auto* valueType = effectiveValueType(klass);
+            if (!writeLuaPrimitiveToRaw(L, 2, valueType, raw.data(), raw.size())) {
+                return luaL_error(L, "AZ: no safe primitive conversion for %s", className(klass).c_str());
+            }
+        }
+    }
+
+    auto* boxed = Il2cpp::GetBoxedValue(klass, raw.data());
+    return pushInstance(L, boxed);
+}
+
+int l_instance_materialize(lua_State* L) {
+    if (lua_isnoneornil(L, 2)) {
+        return luaL_error(L, "AZ: Instance.materialize requires a value");
+    }
+    return l_instance_box(L);
+}
+
+int l_array_create(lua_State* L) {
+    auto* elementClass = resolveClassArg(L, 1);
+    if (!elementClass) return luaL_error(L, "AZ: Array.create element class not found");
+    luaL_checktype(L, 2, LUA_TTABLE);
+
+    const size_t supplied = static_cast<size_t>(lua_rawlen(L, 2));
+    size_t length = supplied;
+    if (!lua_isnoneornil(L, 3)) {
+        lua_Integer requested = luaL_checkinteger(L, 3);
+        if (requested < 0) return luaL_error(L, "AZ: Array.create length must be >= 0");
+        length = static_cast<size_t>(requested);
+        if (length < supplied) {
+            return luaL_error(L, "AZ: Array.create length is smaller than values table");
+        }
+    }
+
+    auto* array = Il2cpp::ArrayNew(elementClass, static_cast<il2cpp_array_size_t>(length));
+    if (!array) return luaL_error(L, "AZ: il2cpp_array_new failed");
+
+    auto* arrayClass = Il2cpp::GetObjectClass(reinterpret_cast<Il2CppObject*>(array));
+    uint32_t headerSize = il2cpp_array_object_header_size ? il2cpp_array_object_header_size()
+                                                          : static_cast<uint32_t>(sizeof(_Il2CppArray));
+    int elementSize = (il2cpp_class_array_element_size && arrayClass)
+        ? il2cpp_class_array_element_size(arrayClass)
+        : 0;
+    if (elementSize <= 0) {
+        elementSize = Il2cpp::GetClassIsValueType(elementClass)
+            ? Il2cpp::GetClassValueSize(elementClass)
+            : static_cast<int>(sizeof(void*));
+    }
+    if (headerSize < sizeof(Il2CppObject) || elementSize <= 0 || elementSize > 4096) {
+        return luaL_error(L, "AZ: array metadata is unsafe (header=%u element=%d)", headerSize, elementSize);
+    }
+
+    uint8_t* data = reinterpret_cast<uint8_t*>(array) + headerSize;
+    const bool valueType = Il2cpp::GetClassIsValueType(elementClass);
+    auto* elementType = effectiveValueType(elementClass);
+
+    for (size_t i = 0; i < supplied; ++i) {
+        lua_rawgeti(L, 2, static_cast<lua_Integer>(i + 1));
+        void* slot = data + (i * static_cast<size_t>(elementSize));
+
+        if (valueType) {
+            std::memset(slot, 0, static_cast<size_t>(elementSize));
+            if (auto* inst = static_cast<LuaInstance*>(luaL_testudata(L, -1, MT_INSTANCE))) {
+                auto* obj = getInstanceObject(inst);
+                if (!obj || Il2cpp::GetObjectClass(obj) != elementClass) {
+                    lua_pop(L, 1);
+                    return luaL_error(L, "AZ: Array.create boxed value type mismatch at index %zu", i + 1);
+                }
+                void* raw = Il2cpp::GetUnboxedValue(obj);
+                if (!raw) {
+                    lua_pop(L, 1);
+                    return luaL_error(L, "AZ: Array.create failed to unbox index %zu", i + 1);
+                }
+                const size_t valueSize = static_cast<size_t>(std::max(0, Il2cpp::GetClassValueSize(elementClass)));
+                std::memcpy(slot, raw, std::min(valueSize, static_cast<size_t>(elementSize)));
+            } else if (!writeLuaPrimitiveToRaw(L, -1, elementType, slot, static_cast<size_t>(elementSize))) {
+                lua_pop(L, 1);
+                return luaL_error(L, "AZ: unsupported array value at index %zu for %s",
+                                  i + 1, className(elementClass).c_str());
+            }
+        } else {
+            Il2CppObject* value = nullptr;
+            auto* type = Il2cpp::GetClassType(elementClass);
+            if (type && type->type == IL2CPP_TYPE_STRING) {
+                if (!lua_isnil(L, -1)) {
+                    value = reinterpret_cast<Il2CppObject*>(Il2cpp::NewString(luaL_checkstring(L, -1)));
+                }
+            } else if (!lua_isnil(L, -1)) {
+                auto* inst = static_cast<LuaInstance*>(luaL_testudata(L, -1, MT_INSTANCE));
+                if (!inst) {
+                    lua_pop(L, 1);
+                    return luaL_error(L, "AZ: reference array expects managed objects at index %zu", i + 1);
+                }
+                value = getInstanceObject(inst);
+                if (!value) {
+                    lua_pop(L, 1);
+                    return luaL_error(L, "AZ: array object is no longer alive at index %zu", i + 1);
+                }
+            }
+
+            auto** target = reinterpret_cast<void**>(slot);
+            *target = value;
+            if (il2cpp_gc_wbarrier_set_field) {
+                il2cpp_gc_wbarrier_set_field(reinterpret_cast<Il2CppObject*>(array), target, value);
+            }
+        }
+        lua_pop(L, 1);
+    }
+
+    return pushInstance(L, reinterpret_cast<Il2CppObject*>(array));
+}
+
+std::string safeScriptName(std::string name) {
+    if (name.empty()) return {};
+    if (name.find("..") != std::string::npos ||
+        name.find('/') != std::string::npos ||
+        name.find('\\') != std::string::npos) {
+        return {};
+    }
+    if (name.size() < 4 || name.substr(name.size() - 4) != ".lua") name += ".lua";
+    return name;
+}
+
+std::filesystem::path scriptDirectory() {
+    std::string base = Il2cpp::getDataPath();
+    if (base.empty() || base.rfind("unknown_", 0) == 0) return {};
+    std::filesystem::path dir = std::filesystem::path(base) / "AZTool" / "scripts";
+    std::error_code ec;
+    std::filesystem::create_directories(dir, ec);
+    if (ec) return {};
+    return dir;
+}
+
+std::vector<std::string> listScripts() {
+    std::vector<std::string> out;
+    auto dir = scriptDirectory();
+    if (dir.empty()) return out;
+    std::error_code ec;
+    for (const auto& entry : std::filesystem::directory_iterator(dir, ec)) {
+        if (ec) break;
+        if (!entry.is_regular_file()) continue;
+        if (entry.path().extension() == ".lua") out.push_back(entry.path().filename().string());
+    }
+    std::sort(out.begin(), out.end());
+    return out;
+}
+
+bool saveScript(const std::string& name, const char* content) {
+    const std::string safe = safeScriptName(name);
+    auto dir = scriptDirectory();
+    if (safe.empty() || dir.empty()) return false;
+    std::ofstream out(dir / safe, std::ios::binary | std::ios::trunc);
+    if (!out) return false;
+    out.write(content, static_cast<std::streamsize>(std::strlen(content)));
+    return out.good();
+}
+
+bool loadScript(const std::string& name) {
+    const std::string safe = safeScriptName(name);
+    auto dir = scriptDirectory();
+    if (safe.empty() || dir.empty()) return false;
+    std::ifstream in(dir / safe, std::ios::binary);
+    if (!in) return false;
+    std::string text((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+    const size_t n = std::min(text.size(), sizeof(g_editor) - 1);
+    std::memcpy(g_editor, text.data(), n);
+    g_editor[n] = '\0';
+    g_selectedScript = safe;
+    std::snprintf(g_scriptName, sizeof(g_scriptName), "%s", safe.c_str());
+    return true;
+}
+
+bool deleteScript(const std::string& name) {
+    const std::string safe = safeScriptName(name);
+    auto dir = scriptDirectory();
+    if (safe.empty() || dir.empty()) return false;
+    std::error_code ec;
+    const bool removed = std::filesystem::remove(dir / safe, ec);
+    return removed && !ec;
+}
+
+void releaseWidgetRef(lua_State* L, RetainedWidget& w) {
+    if (L && w.callbackRef != LUA_NOREF && w.callbackRef != LUA_REFNIL) {
+        luaL_unref(L, LUA_REGISTRYINDEX, w.callbackRef);
+    }
+    w.callbackRef = LUA_NOREF;
+}
+
+void releaseWindowRefs(lua_State* L, RetainedWindow& w) {
+    for (auto& widget : w.widgets) releaseWidgetRef(L, widget);
+}
+
+RetainedWindow& getOrCreateWindowLocked(const std::string& id) {
+    auto it = g_windows.find(id);
+    if (it == g_windows.end()) {
+        RetainedWindow w;
+        w.id = id;
+        w.title = id;
+        it = g_windows.emplace(id, std::move(w)).first;
+    }
+    return it->second;
+}
+
+int captureCallback(lua_State* L, int idx) {
+    if (lua_isnoneornil(L, idx)) return LUA_NOREF;
+    luaL_checktype(L, idx, LUA_TFUNCTION);
+    lua_pushvalue(L, idx);
+    return luaL_ref(L, LUA_REGISTRYINDEX);
+}
+
+int l_ui_create_window(lua_State* L) {
+    const char* id = luaL_checkstring(L, 1);
+    const char* title = luaL_optstring(L, 2, id);
+    std::lock_guard<std::mutex> lock(g_uiMutex);
+    auto& w = getOrCreateWindowLocked(id);
+    releaseWindowRefs(L, w);
+    w.widgets.clear();
+    w.title = title ? title : id;
+    w.open = true;
+    lua_pushboolean(L, 1);
+    return 1;
+}
+
+int l_ui_remove_window(lua_State* L) {
+    const char* id = luaL_checkstring(L, 1);
+    std::lock_guard<std::mutex> lock(g_uiMutex);
+    auto it = g_windows.find(id);
+    if (it != g_windows.end()) {
+        releaseWindowRefs(L, it->second);
+        g_windows.erase(it);
+    }
+    return 0;
+}
+
+int l_ui_clear_window(lua_State* L) {
+    const char* id = luaL_checkstring(L, 1);
+    std::lock_guard<std::mutex> lock(g_uiMutex);
+    auto& w = getOrCreateWindowLocked(id);
+    releaseWindowRefs(L, w);
+    w.widgets.clear();
+    return 0;
+}
+
+int l_ui_set_window_open(lua_State* L) {
+    const char* id = luaL_checkstring(L, 1);
+    const bool open = lua_toboolean(L, 2);
+    std::lock_guard<std::mutex> lock(g_uiMutex);
+    getOrCreateWindowLocked(id).open = open;
+    return 0;
+}
+
+RetainedWidget& addWidget(lua_State* L, const std::string& windowId, RetainedWidget widget) {
+    std::lock_guard<std::mutex> lock(g_uiMutex);
+    auto& w = getOrCreateWindowLocked(windowId);
+    if (!widget.id.empty()) {
+        for (auto& existing : w.widgets) {
+            if (existing.id == widget.id) {
+                releaseWidgetRef(L, existing);
+                existing = std::move(widget);
+                return existing;
+            }
+        }
+    }
+    w.widgets.push_back(std::move(widget));
+    return w.widgets.back();
+}
+
+int l_ui_text(lua_State* L) {
+    RetainedWidget w;
+    w.kind = RetainedKind::Text;
+    w.text = luaL_checkstring(L, 2);
+    addWidget(L, luaL_checkstring(L, 1), std::move(w));
+    return 0;
+}
+
+int l_ui_separator(lua_State* L) {
+    RetainedWidget w;
+    w.kind = RetainedKind::Separator;
+    addWidget(L, luaL_checkstring(L, 1), std::move(w));
+    return 0;
+}
+
+int l_ui_same_line(lua_State* L) {
+    RetainedWidget w;
+    w.kind = RetainedKind::SameLine;
+    addWidget(L, luaL_checkstring(L, 1), std::move(w));
+    return 0;
+}
+
+int l_ui_button(lua_State* L) {
+    RetainedWidget w;
+    w.kind = RetainedKind::Button;
+    w.id = luaL_checkstring(L, 2);
+    w.label = luaL_checkstring(L, 3);
+    w.callbackRef = captureCallback(L, 4);
+    addWidget(L, luaL_checkstring(L, 1), std::move(w));
+    return 0;
+}
+
+int l_ui_checkbox(lua_State* L) {
+    RetainedWidget w;
+    w.kind = RetainedKind::Checkbox;
+    w.id = luaL_checkstring(L, 2);
+    w.label = luaL_checkstring(L, 3);
+    w.boolValue = lua_toboolean(L, 4);
+    w.callbackRef = captureCallback(L, 5);
+    addWidget(L, luaL_checkstring(L, 1), std::move(w));
+    return 0;
+}
+
+int l_ui_input_text(lua_State* L) {
+    RetainedWidget w;
+    w.kind = RetainedKind::InputText;
+    w.id = luaL_checkstring(L, 2);
+    w.label = luaL_checkstring(L, 3);
+    w.text = luaL_optstring(L, 4, "");
+    w.callbackRef = captureCallback(L, 5);
+    addWidget(L, luaL_checkstring(L, 1), std::move(w));
+    return 0;
+}
+
+int l_ui_input_int(lua_State* L) {
+    RetainedWidget w;
+    w.kind = RetainedKind::InputInt;
+    w.id = luaL_checkstring(L, 2);
+    w.label = luaL_checkstring(L, 3);
+    w.intValue = static_cast<int>(luaL_optinteger(L, 4, 0));
+    w.callbackRef = captureCallback(L, 5);
+    addWidget(L, luaL_checkstring(L, 1), std::move(w));
+    return 0;
+}
+
+int l_ui_input_float(lua_State* L) {
+    RetainedWidget w;
+    w.kind = RetainedKind::InputFloat;
+    w.id = luaL_checkstring(L, 2);
+    w.label = luaL_checkstring(L, 3);
+    w.floatValue = static_cast<float>(luaL_optnumber(L, 4, 0.0));
+    w.callbackRef = captureCallback(L, 5);
+    addWidget(L, luaL_checkstring(L, 1), std::move(w));
+    return 0;
+}
+
+int l_ui_slider_int(lua_State* L) {
+    RetainedWidget w;
+    w.kind = RetainedKind::SliderInt;
+    w.id = luaL_checkstring(L, 2);
+    w.label = luaL_checkstring(L, 3);
+    w.intValue = static_cast<int>(luaL_checkinteger(L, 4));
+    w.minValue = static_cast<int>(luaL_checkinteger(L, 5));
+    w.maxValue = static_cast<int>(luaL_checkinteger(L, 6));
+    w.callbackRef = captureCallback(L, 7);
+    addWidget(L, luaL_checkstring(L, 1), std::move(w));
+    return 0;
+}
+
+int l_ui_combo(lua_State* L) {
+    RetainedWidget w;
+    w.kind = RetainedKind::Combo;
+    w.id = luaL_checkstring(L, 2);
+    w.label = luaL_checkstring(L, 3);
+    luaL_checktype(L, 4, LUA_TTABLE);
+    const lua_Integer count = static_cast<lua_Integer>(lua_rawlen(L, 4));
+    for (lua_Integer i = 1; i <= count; ++i) {
+        lua_rawgeti(L, 4, i);
+        w.options.emplace_back(luaL_checkstring(L, -1));
+        lua_pop(L, 1);
+    }
+    w.intValue = static_cast<int>(luaL_optinteger(L, 5, 1));
+    w.callbackRef = captureCallback(L, 6);
+    addWidget(L, luaL_checkstring(L, 1), std::move(w));
+    return 0;
+}
+
+RetainedWidget* findWidgetLocked(const std::string& wid, const std::string& id) {
+    auto wit = g_windows.find(wid);
+    if (wit == g_windows.end()) return nullptr;
+    for (auto& w : wit->second.widgets) if (w.id == id) return &w;
+    return nullptr;
+}
+
+int l_ui_get_value(lua_State* L) {
+    const char* windowId = luaL_checkstring(L, 1);
+    const char* widgetId = luaL_checkstring(L, 2);
+    std::lock_guard<std::mutex> lock(g_uiMutex);
+    auto* w = findWidgetLocked(windowId, widgetId);
+    if (!w) {
+        lua_pushnil(L);
+        return 1;
+    }
+    switch (w->kind) {
+        case RetainedKind::Checkbox:
+            lua_pushboolean(L, w->boolValue);
+            break;
+        case RetainedKind::InputText:
+            lua_pushlstring(L, w->text.c_str(), w->text.size());
+            break;
+        case RetainedKind::InputFloat:
+            lua_pushnumber(L, w->floatValue);
+            break;
+        case RetainedKind::InputInt:
+        case RetainedKind::SliderInt:
+        case RetainedKind::Combo:
+            lua_pushinteger(L, w->intValue);
+            break;
+        default:
+            lua_pushnil(L);
+            break;
+    }
+    return 1;
+}
+
+int l_ui_set_value(lua_State* L) {
+    const char* windowId = luaL_checkstring(L, 1);
+    const char* widgetId = luaL_checkstring(L, 2);
+    std::lock_guard<std::mutex> lock(g_uiMutex);
+    auto* w = findWidgetLocked(windowId, widgetId);
+    if (!w) return luaL_error(L, "AZ: retained widget not found");
+    switch (w->kind) {
+        case RetainedKind::Checkbox:
+            w->boolValue = lua_toboolean(L, 3);
+            break;
+        case RetainedKind::InputText:
+            w->text = luaL_checkstring(L, 3);
+            break;
+        case RetainedKind::InputFloat:
+            w->floatValue = static_cast<float>(luaL_checknumber(L, 3));
+            break;
+        case RetainedKind::InputInt:
+        case RetainedKind::SliderInt:
+        case RetainedKind::Combo:
+            w->intValue = static_cast<int>(luaL_checkinteger(L, 3));
+            break;
+        default:
+            return luaL_error(L, "AZ: widget has no retained value");
+    }
+    return 0;
+}
+
+int l_gg_toast(lua_State* L) {
+    appendOutput(std::string("[toast] ") + luaL_checkstring(L, 1));
+    return 0;
+}
+
+int l_gg_alert(lua_State* L) {
+    std::lock_guard<std::mutex> lock(g_uiMutex);
+    g_alertText = luaL_checkstring(L, 1);
+    g_alertPending = true;
+    lua_pushinteger(L, 1);
+    return 1;
+}
+
+extern bool collapsed;
+
+int l_gg_set_visible(lua_State* L) {
+    collapsed = !lua_toboolean(L, 1);
+    return 0;
+}
+
+int l_gg_is_visible(lua_State* L) {
+    lua_pushboolean(L, !collapsed);
+    return 1;
+}
+
+int l_gg_sleep(lua_State* L) {
+    lua_Integer ms = luaL_checkinteger(L, 1);
+    if (ms < 0) ms = 0;
+    usleep(static_cast<useconds_t>(ms * 1000));
+    return 0;
+}
+
+int l_gg_get_target_package(lua_State* L) {
+    std::string p = Il2cpp::getPackageName();
+    lua_pushlstring(L, p.c_str(), p.size());
+    return 1;
+}
+
+int l_gg_get_target_info(lua_State* L) {
+    lua_newtable(L);
+    std::string p = Il2cpp::getPackageName();
+    std::string v = Il2cpp::getGameVersion();
+    std::string u = Il2cpp::getUnityVersion();
+    lua_pushlstring(L, p.c_str(), p.size());
+    lua_setfield(L, -2, "packageName");
+    lua_pushlstring(L, v.c_str(), v.size());
+    lua_setfield(L, -2, "versionName");
+    lua_pushlstring(L, u.c_str(), u.size());
+    lua_setfield(L, -2, "unityVersion");
+    return 1;
+}
+
+void registerInstanceFactory(lua_State* L) {
+    lua_newtable(L);
+    lua_pushcfunction(L, l_instance_allocate);
+    lua_setfield(L, -2, "allocate");
+    lua_pushcfunction(L, l_instance_allocate);
+    lua_setfield(L, -2, "Allocate");
+    lua_pushcfunction(L, l_instance_box);
+    lua_setfield(L, -2, "box");
+    lua_pushcfunction(L, l_instance_box);
+    lua_setfield(L, -2, "Box");
+    lua_pushcfunction(L, l_instance_materialize);
+    lua_setfield(L, -2, "materialize");
+    lua_pushcfunction(L, l_instance_materialize);
+    lua_setfield(L, -2, "Materialize");
+    lua_setglobal(L, "Instance");
+}
+
+void registerArray(lua_State* L) {
+    lua_newtable(L);
+    lua_pushcfunction(L, l_array_create);
+    lua_setfield(L, -2, "create");
+    lua_pushcfunction(L, l_array_create);
+    lua_setfield(L, -2, "Create");
+    lua_setglobal(L, "Array");
+}
+
+void registerUI(lua_State* L) {
+    lua_newtable(L);
+    lua_pushcfunction(L, l_ui_create_window);
+    lua_setfield(L, -2, "window");
+    lua_pushcfunction(L, l_ui_create_window);
+    lua_setfield(L, -2, "createWindow");
+    lua_pushcfunction(L, l_ui_remove_window);
+    lua_setfield(L, -2, "removeWindow");
+    lua_pushcfunction(L, l_ui_clear_window);
+    lua_setfield(L, -2, "clearWindow");
+    lua_pushcfunction(L, l_ui_set_window_open);
+    lua_setfield(L, -2, "setWindowOpen");
+    lua_pushcfunction(L, l_ui_text);
+    lua_setfield(L, -2, "text");
+    lua_pushcfunction(L, l_ui_separator);
+    lua_setfield(L, -2, "separator");
+    lua_pushcfunction(L, l_ui_same_line);
+    lua_setfield(L, -2, "sameLine");
+    lua_pushcfunction(L, l_ui_button);
+    lua_setfield(L, -2, "button");
+    lua_pushcfunction(L, l_ui_checkbox);
+    lua_setfield(L, -2, "checkbox");
+    lua_pushcfunction(L, l_ui_input_text);
+    lua_setfield(L, -2, "inputText");
+    lua_pushcfunction(L, l_ui_input_int);
+    lua_setfield(L, -2, "inputInt");
+    lua_pushcfunction(L, l_ui_input_float);
+    lua_setfield(L, -2, "inputFloat");
+    lua_pushcfunction(L, l_ui_slider_int);
+    lua_setfield(L, -2, "sliderInt");
+    lua_pushcfunction(L, l_ui_combo);
+    lua_setfield(L, -2, "combo");
+    lua_pushcfunction(L, l_ui_get_value);
+    lua_setfield(L, -2, "getValue");
+    lua_pushcfunction(L, l_ui_set_value);
+    lua_setfield(L, -2, "setValue");
+    lua_setglobal(L, "UI");
+}
+
+void registerGG(lua_State* L) {
+    lua_newtable(L);
+    lua_pushcfunction(L, l_gg_alert);
+    lua_setfield(L, -2, "alert");
+    lua_pushcfunction(L, l_gg_toast);
+    lua_setfield(L, -2, "toast");
+    lua_pushcfunction(L, l_gg_sleep);
+    lua_setfield(L, -2, "sleep");
+    lua_pushcfunction(L, l_gg_set_visible);
+    lua_setfield(L, -2, "setVisible");
+    lua_pushcfunction(L, l_gg_is_visible);
+    lua_setfield(L, -2, "isVisible");
+    lua_pushcfunction(L, l_gg_get_target_package);
+    lua_setfield(L, -2, "getTargetPackage");
+    lua_pushcfunction(L, l_gg_get_target_info);
+    lua_setfield(L, -2, "getTargetInfo");
+
+    // Common GameGuardian numeric constants. Memory scanning itself is added in
+    // a later AZ layer; keeping the constants stable makes scripts portable.
+    lua_pushinteger(L, 1); lua_setfield(L, -2, "TYPE_BYTE");
+    lua_pushinteger(L, 2); lua_setfield(L, -2, "TYPE_WORD");
+    lua_pushinteger(L, 4); lua_setfield(L, -2, "TYPE_DWORD");
+    lua_pushinteger(L, 16); lua_setfield(L, -2, "TYPE_FLOAT");
+    lua_pushinteger(L, 64); lua_setfield(L, -2, "TYPE_DOUBLE");
+    lua_pushinteger(L, 32); lua_setfield(L, -2, "TYPE_QWORD");
+    lua_setglobal(L, "gg");
+}
+
+bool invokeRetainedCallback(int ref, int kind, bool bv, int iv, float fv, const std::string& sv) {
+    if (!g_L || ref == LUA_NOREF || ref == LUA_REFNIL) return false;
+    std::lock_guard<std::mutex> lock(g_luaMutex);
+    lua_rawgeti(g_L, LUA_REGISTRYINDEX, ref);
+    if (!lua_isfunction(g_L, -1)) {
+        lua_pop(g_L, 1);
+        return false;
+    }
+
+    int argc = 0;
+    switch (kind) {
+        case 1: lua_pushboolean(g_L, bv); argc = 1; break;
+        case 2: lua_pushinteger(g_L, iv); argc = 1; break;
+        case 3: lua_pushnumber(g_L, fv); argc = 1; break;
+        case 4: lua_pushlstring(g_L, sv.c_str(), sv.size()); argc = 1; break;
+        default: break;
+    }
+
+    if (lua_pcall(g_L, argc, 0, 0) != LUA_OK) {
+        appendOutput(std::string("[UI callback error] ") + (lua_tostring(g_L, -1) ?: "unknown"));
+        lua_pop(g_L, 1);
+        return false;
+    }
+    return true;
+}
+
 int l_get_version(lua_State* L) {
     lua_pushliteral(L, "AZ Tool Core 0.1 / Lua 5.4.7");
     return 1;
