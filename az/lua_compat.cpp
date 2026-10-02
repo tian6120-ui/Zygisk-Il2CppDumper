@@ -66,7 +66,12 @@ static std::string shortn(std::string s){if(s.rfind("System.",0)==0)s.erase(0,7)
 static bool teq(std::string a,std::string b){return a==b||shortn(a)==shortn(b);}
 static Obj* ckobj(lua_State*L,int i){return(Obj*)luaL_checkudata(L,i,"AZ.Obj");}
 static Cls* ckcls(lua_State*L,int i){return(Cls*)luaL_checkudata(L,i,"AZ.Cls");}
-static Il2CppObject* resolve(Obj*u){if(!u)return nullptr;if(u->handle){auto*p=Il2cpp::GC::GetHandleTarget(u->handle);if(p){u->raw=p;return p;}}return u->raw;}
+static Il2CppObject* resolve(Obj*u){
+ // Unity 6000.4 + Houdini: il2cpp_gchandle_get_target can crash in libil2cpp.
+ // Keep GCHandle only as a strong root. IL2CPP objects are non-moving here,
+ // so the rooted raw pointer remains stable for the wrapper lifetime.
+ return u?u->raw:nullptr;
+}
 static int pushObj(lua_State*L,Il2CppObject*o){if(!o){lua_pushnil(L);return 1;}auto*u=(Obj*)lua_newuserdatauv(L,sizeof(Obj),0);new(u)Obj{};u->raw=o;if(Il2cpp::GcHandleApiResolved())u->handle=Il2cpp::GC::NewHandle(o,false);luaL_getmetatable(L,"AZ.Obj");lua_setmetatable(L,-2);return 1;}
 static int pushCls(lua_State*L,Il2CppClass*k){if(!k){lua_pushnil(L);return 1;}auto*u=(Cls*)lua_newuserdatauv(L,sizeof(Cls),0);u->klass=k;luaL_getmetatable(L,"AZ.Cls");lua_setmetatable(L,-2);return 1;}
 static int objgc(lua_State*L){auto*u=(Obj*)luaL_testudata(L,1,"AZ.Obj");if(u&&u->handle){Il2cpp::GC::FreeHandle(u->handle);u->handle=0;}return 0;}
@@ -186,9 +191,7 @@ static uint32_t g_sendDelegateHandle=0;
 static MethodInfo *g_syncPostMethod=nullptr;
 
 static Il2CppObject* rooted(uint32_t h,Il2CppObject*raw){
- if(h&&Il2cpp::GcHandleApiResolved()){
-  if(auto*o=Il2cpp::GC::GetHandleTarget(h))return o;
- }
+ (void)h;
  return raw;
 }
 
@@ -597,7 +600,10 @@ static int callExact(lua_State*L){
  trace("Call.exact.method | "+n+" | ptr="+std::to_string((uintptr_t)m));
  if(!m)return luaL_error(L,"Call.exact method not found");
  Il2CppObject*r=nullptr;
- if(luaL_testudata(L,2,"AZ.Obj"))r=resolve(ckobj(L,2));
+ if(auto*u=(Obj*)luaL_testudata(L,2,"AZ.Obj")){
+  trace("Call.exact.receiver.wrapper | "+n+" | raw="+std::to_string((uintptr_t)u->raw)+" | handle="+std::to_string(u->handle));
+  r=resolve(u);
+ }
  trace("Call.exact.receiver | "+n+" | ptr="+std::to_string((uintptr_t)r));
  return invoke(L,m,r,3,lua_gettop(L)-2);
 }
