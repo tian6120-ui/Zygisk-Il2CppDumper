@@ -64,7 +64,7 @@ if '#include "Tool/AZLua.h"' not in m:
     m = m.replace('#include "Tool/SelfCheck.h"', '#include "Tool/SelfCheck.h"\n#include "Tool/AZLua.h"', 1)
 m = m.replace(
     'const char *title = OBFUSCATE("Il2CppTool v0.9 | HitMargin");',
-    'const char *title = OBFUSCATE("AZ Tool Core 0.1");',
+    'const char *title = OBFUSCATE("AZ Tool Core 0.2");',
     1,
 )
 
@@ -88,6 +88,30 @@ cleanup_anchor = """    Keyboard::Reset();
 if cleanup_anchor not in m:
     raise SystemExit("Main.cpp cleanup anchor missing")
 m = m.replace(cleanup_anchor, "    Keyboard::Reset();\n    AZLua::Shutdown();\n}", 1)
+
+retained_anchor = """    ImGui::End();
+}
+
+static nlohmann::ordered_json gConf;
+"""
+if retained_anchor not in m:
+    raise SystemExit("Main.cpp retained UI anchor missing")
+m = m.replace(
+    retained_anchor,
+    """    ImGui::End();
+    AZLua::DrawRetainedWindows();
+}
+
+static nlohmann::ordered_json gConf;
+""",
+    1,
+)
+
+m = m.replace('ImGui::Button("bilibili HitMargin", ImVec2(-1, 0))',
+              'ImGui::Button("AZ Tool Source / GPLv3", ImVec2(-1, 0))', 1)
+m = m.replace('OBFUSCATE("https://m.bilibili.com/space/1757946676")',
+              'OBFUSCATE("https://github.com/tian6120-ui/Zygisk-Il2CppDumper")', 1)
+
 main.write_text(m, encoding="utf-8")
 
 # AZ visual theme. Keep the existing rendering/input code; only theme it.
