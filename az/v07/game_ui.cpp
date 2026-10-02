@@ -54,12 +54,9 @@ float g_font_scale=1.25f;
 float g_font_base_px=20.0f;
 int g_font_scale_idx=1;
 int g_language=0; // 0 English, 1 Simplified Chinese
-int g_font_family=0; // 0 System Sans, 1 CJK Sans, 2 Mono
-ImFont* g_fonts[3]={nullptr,nullptr,nullptr};
+ImFont* g_main_font=nullptr;
 const float kFontScales[]={1.00f,1.25f,1.50f,1.75f,2.00f,2.25f,2.50f};
 const char* kFontScaleLabels[]={"100%","125%","150%","175%","200%","225%","250%"};
-const char* kFontFamilyEn[]={"System Sans","CJK Sans","Mono"};
-const char* kFontFamilyZh[]={"系统无衬线","中文无衬线","等宽字体"};
 
 std::string pkg(){
  FILE*f=fopen("/proc/self/cmdline","rb");if(!f)return"unknown";char b[256]{};size_t n=fread(b,1,sizeof(b)-1,f);fclose(f);
@@ -91,17 +88,25 @@ void loadUiConfig(){
  for(int i=0;i<7;++i){float nd=fabsf(kFontScales[i]-v);if(nd<d){d=nd;best=i;}}
  g_font_scale_idx=best;g_font_scale=kFontScales[best];
  g_language=std::clamp(cfgInt(s,"language=",0),0,1);
- g_font_family=std::clamp(cfgInt(s,"fontFamily=",0),0,2);
 }
 void saveUiConfig(){
  paths();char b[160];
- snprintf(b,sizeof(b),"fontScale=%.2f\nlanguage=%d\nfontFamily=%d\n",g_font_scale,g_language,g_font_family);
+ snprintf(b,sizeof(b),"fontScale=%.2f\nlanguage=%d\n",g_font_scale,g_language);
  wf(g_ui_cfg,b);
 }
 bool fileExists(const char*p){return p&&access(p,R_OK)==0;}
 const char* firstFont(const char*const*list){
  for(int i=0;list[i];++i)if(fileExists(list[i]))return list[i];
  return nullptr;
+}
+const char* robotoMediumPath(){
+ static const char*const p[]={
+  "/system/fonts/Roboto-Medium.ttf",
+  "/system/fonts/Roboto-Regular.ttf",
+  "/system/fonts/NotoSans-Regular.ttf",
+  nullptr
+ };
+ return firstFont(p);
 }
 const char* cjkFontPath(){
  static const char*const p[]={
@@ -113,60 +118,27 @@ const char* cjkFontPath(){
  };
  return firstFont(p);
 }
-const char* sansFontPath(){
- static const char*const p[]={
-  "/system/fonts/Roboto-Regular.ttf",
-  "/system/fonts/NotoSans-Regular.ttf",
-  "/system/fonts/NotoSansCJK-Regular.ttc",
-  nullptr
- };
- return firstFont(p);
-}
-const char* monoFontPath(){
- static const char*const p[]={
-  "/system/fonts/RobotoMono-Regular.ttf",
-  "/system/fonts/NotoSansMono-Regular.ttf",
-  "/system/fonts/DroidSansMono.ttf",
-  nullptr
- };
- return firstFont(p);
-}
-ImVector<ImWchar> buildUiZhRanges(){
- ImFontGlyphRangesBuilder b;
- b.AddRanges(ImGui::GetIO().Fonts->GetGlyphRangesDefault());
- b.AddText("中文界面语言字体系统无衬线等宽大小实际字号画布脚本输出信息粘贴并运行保存载入上次复制全部清空自动滚动");
- ImVector<ImWchar> out;b.BuildRanges(&out);return out;
-}
-void mergeUiZh(float px){
- const char*cjk=cjkFontPath();if(!cjk)return;
- ImVector<ImWchar> ranges=buildUiZhRanges();
- ImFontConfig m{};m.MergeMode=true;m.PixelSnapH=true;m.OversampleH=2;m.OversampleV=2;
- ImGui::GetIO().Fonts->AddFontFromFileTTF(cjk,px,&m,ranges.Data);
-}
-void prepareFontsOnce(){
+void prepareV7FontOnce(){
  ImGuiIO&io=ImGui::GetIO();
  const float px=g_font_base_px;
- const char*sans=sansFontPath();const char*cjk=cjkFontPath();const char*mono=monoFontPath();
+ const char*roboto=robotoMediumPath();
  io.Fonts->Clear();
- ImFontConfig fc{};fc.OversampleH=3;fc.OversampleV=2;fc.PixelSnapH=false;
- g_fonts[0]=sans?io.Fonts->AddFontFromFileTTF(sans,px,&fc,io.Fonts->GetGlyphRangesDefault()):io.Fonts->AddFontDefault(&fc);
- if(g_fonts[0])mergeUiZh(px);
- ImFontConfig cc{};cc.OversampleH=2;cc.OversampleV=2;cc.PixelSnapH=false;
- g_fonts[1]=cjk?io.Fonts->AddFontFromFileTTF(cjk,px,&cc,io.Fonts->GetGlyphRangesChineseSimplifiedCommon()):g_fonts[0];
- ImFontConfig mc{};mc.OversampleH=3;mc.OversampleV=2;mc.PixelSnapH=false;
- g_fonts[2]=mono?io.Fonts->AddFontFromFileTTF(mono,px,&mc,io.Fonts->GetGlyphRangesDefault()):g_fonts[0];
- if(g_fonts[2]&&g_fonts[2]!=g_fonts[0])mergeUiZh(px);
- if(!g_fonts[0])g_fonts[0]=io.Fonts->AddFontDefault();
- if(!g_fonts[1])g_fonts[1]=g_fonts[0];
- if(!g_fonts[2])g_fonts[2]=g_fonts[0];
- io.FontDefault=g_fonts[std::clamp(g_font_family,0,2)];
+ ImFontConfig base{};base.OversampleH=3;base.OversampleV=2;base.PixelSnapH=false;
+ g_main_font=roboto?io.Fonts->AddFontFromFileTTF(roboto,px,&base,io.Fonts->GetGlyphRangesDefault()):io.Fonts->AddFontDefault(&base);
+ // Keep Chinese support tiny: only the glyphs used by this UI, merged once at startup.
+ const char*cjk=cjkFontPath();
+ if(cjk&&g_main_font){
+   ImFontGlyphRangesBuilder b;
+   b.AddRanges(io.Fonts->GetGlyphRangesDefault());
+   b.AddText("中文脚本输出信息界面语言字体大小实际字号画布粘贴并运行保存载入上次复制全部清空自动滚动状态连接");
+   ImVector<ImWchar> ranges;b.BuildRanges(&ranges);
+   ImFontConfig merge{};merge.MergeMode=true;merge.PixelSnapH=true;merge.OversampleH=2;merge.OversampleV=2;
+   io.Fonts->AddFontFromFileTTF(cjk,px,&merge,ranges.Data);
+ }
+ io.FontDefault=g_main_font?g_main_font:io.Fonts->AddFontDefault();
  g_font_scale=kFontScales[std::clamp(g_font_scale_idx,0,6)];
  io.FontGlobalScale=g_font_scale;
- AZI("V7-style fonts ready base=%.1f scale=%.2f family=%d sans=%s cjk=%s mono=%s",px,g_font_scale,g_font_family,sans?sans:"builtin",cjk?cjk:"none",mono?mono:"fallback");
-}
-void applyFontFamilyLive(){
- int i=std::clamp(g_font_family,0,2);
- if(g_fonts[i])ImGui::GetIO().FontDefault=g_fonts[i];
+ AZI("V7 font ready base=%.1f scale=%.2f roboto=%s cjk=%s",px,g_font_scale,roboto?roboto:"builtin",cjk?cjk:"none");
 }
 void applyV7FontScaleLive(){
  g_font_scale=kFontScales[std::clamp(g_font_scale_idx,0,6)];
@@ -246,18 +218,6 @@ void draw(int w,int h){
         if(ImGui::Selectable("中文",g_language==1)){g_language=1;saveUiConfig();}
         ImGui::EndCombo();
       }
-      ImGui::Text(g_language?"字体":"Font");
-      ImGui::SetNextItemWidth(210.0f);
-      const char*familyLabel=g_language?kFontFamilyZh[g_font_family]:kFontFamilyEn[g_font_family];
-      if(ImGui::BeginCombo("##font_family",familyLabel)){
-        for(int i=0;i<3;++i){
-          bool sel=i==g_font_family;
-          const char*lab=g_language?kFontFamilyZh[i]:kFontFamilyEn[i];
-          if(ImGui::Selectable(lab,sel)){g_font_family=i;applyFontFamilyLive();saveUiConfig();}
-          if(sel)ImGui::SetItemDefaultFocus();
-        }
-        ImGui::EndCombo();
-      }
       ImGui::Text(g_language?"字体大小":"Font size");
       ImGui::SetNextItemWidth(210.0f);
       if(ImGui::BeginCombo("##scale_dropdown",kFontScaleLabels[g_font_scale_idx])){
@@ -292,9 +252,9 @@ bool setup(GL&g,ANativeWindow*w){
    int sw=ANativeWindow_getWidth(w),sh=ANativeWindow_getHeight(w);int shortSide=std::max(1,std::min(sw,sh));
    g_font_base_px=std::clamp(shortSide/45.0f,18.0f,30.0f);
    loadUiConfig();
-   prepareFontsOnce();
+   prepareV7FontOnce();
    style();ImGui_ImplOpenGL3_Init("#version 300 es");loadLast();g.imgui=true;
-   AZI("Font manager ready base=%.1f scale=%.2f language=%d family=%d",g_font_base_px,g_font_scale,g_language,g_font_family);
+   AZI("Font manager ready base=%.1f scale=%.2f language=%d",g_font_base_px,g_font_scale,g_language);
  }return true;
 }
 void* render(void*){
