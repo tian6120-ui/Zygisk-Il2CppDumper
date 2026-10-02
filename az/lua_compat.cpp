@@ -15,16 +15,24 @@
 #include "Dobby/dobby.h"
 #include "Includes/Logger.h"
 extern "C" {
-#include "azlua/lua.h"
-#include "azlua/lauxlib.h"
-#include "azlua/lualib.h"
+#include "lua.h"
+#include "lauxlib.h"
+#include "lualib.h"
 }
 
 namespace AZLua {
-static constexpr const char *BASE="/data/user/0/com.springgames.archercastle/files/AZTool";
-static constexpr const char *REQ="/data/user/0/com.springgames.archercastle/files/AZTool/script.req";
-static constexpr const char *OUT="/data/user/0/com.springgames.archercastle/files/AZTool/script.out";
-static constexpr const char *STATUS="/data/user/0/com.springgames.archercastle/files/AZTool/script.status";
+static std::string g_pkg, g_base, g_req, g_out, g_status;
+static std::string procPackage(){
+ FILE*f=fopen("/proc/self/cmdline","rb"); if(!f)return "unknown";
+ char b[256]{}; size_t n=fread(b,1,sizeof(b)-1,f); fclose(f);
+ std::string s(b,n); auto z=s.find('\0'); if(z!=std::string::npos)s.resize(z);
+ auto colon=s.find(':'); if(colon!=std::string::npos)s.resize(colon);
+ return s.empty()?"unknown":s;
+}
+static const char* BASE(){return g_base.c_str();}
+static const char* REQ(){return g_req.c_str();}
+static const char* OUT(){return g_out.c_str();}
+static const char* STATUS(){return g_status.c_str();}
 struct Obj { Il2CppObject *raw{}; uint32_t handle{}; };
 struct Cls { Il2CppClass *klass{}; };
 struct HookRec { int id{}; MethodInfo *method{}; void *target{}; void *orig{}; };
@@ -38,10 +46,15 @@ static void logf(const char *fmt,...){
  __android_log_print(ANDROID_LOG_INFO,"AZL07","%s",b);
  FILE *f=fopen("/data/local/tmp/AZTool/core.log","a"); if(f){fprintf(f,"[AZL07] %s\n",b);fclose(f);}
 }
-static void ensureDir(){mkdir("/data/user/0/com.springgames.archercastle/files",0700);mkdir(BASE,0700);}
+static void ensureDir(){
+ g_pkg=procPackage();
+ std::string files="/data/user/0/"+g_pkg+"/files";
+ g_base=files+"/AZTool"; g_req=g_base+"/script.req"; g_out=g_base+"/script.out"; g_status=g_base+"/script.status";
+ mkdir(files.c_str(),0700); mkdir(g_base.c_str(),0700);
+}
 static void writeText(const char *p,const std::string&s){FILE*f=fopen(p,"wb");if(!f)return;fwrite(s.data(),1,s.size(),f);fclose(f);}
 static std::string readText(const char*p,size_t lim=1048576){FILE*f=fopen(p,"rb");if(!f)return{};std::string s;char b[4096];while(!feof(f)&&s.size()<lim){size_t n=fread(b,1,sizeof(b),f);if(!n)break;if(s.size()+n>lim)n=lim-s.size();s.append(b,n);}fclose(f);return s;}
-static void out(const std::string&s){FILE*f=fopen(OUT,"ab");if(!f)return;fwrite(s.data(),1,s.size(),f);fwrite("\n",1,1,f);fclose(f);}
+static void out(const std::string&s){FILE*f=fopen(OUT(),"ab");if(!f)return;fwrite(s.data(),1,s.size(),f);fwrite("\n",1,1,f);fclose(f);}
 static std::string tname(Il2CppType*t){const char*n=t?Il2cpp::GetTypeName(t):nullptr;return n?n:"";}
 static std::string shortn(std::string s){if(s.rfind("System.",0)==0)s.erase(0,7);return s;}
 static bool teq(std::string a,std::string b){return a==b||shortn(a)==shortn(b);}
@@ -125,7 +138,7 @@ static void reg(lua_State*L){
  lua_pushcfunction(L,azPrint);lua_setglobal(L,"print");lua_getglobal(L,"load");lua_setglobal(L,"loadstring");lua_pushliteral(L,"AZ ScriptCore 0.7");lua_setglobal(L,"AZ_VERSION");
 }
 static bool safe(const std::string&s){return!s.empty()&&s.size()<240&&s.find("..")==std::string::npos&&s.find('/')==std::string::npos&&s.find('\\')==std::string::npos&&s.size()>4&&s.substr(s.size()-4)==".lua";}
-static void run(const std::string&name){std::string f=safe(name)?std::string(BASE)+"/"+name:std::string(BASE)+"/script.lua";writeText(OUT,"[AZ ScriptCore 0.7] RUN | "+f+"\n");writeText(STATUS,"RUNNING");int rc=luaL_loadfile(G,f.c_str());if(rc==LUA_OK)rc=lua_pcall(G,0,LUA_MULTRET,0);if(rc!=LUA_OK){const char*e=lua_tostring(G,-1);out(std::string("ERROR | ")+(e?e:"unknown"));lua_pop(G,1);writeText(STATUS,"ERROR");}else{out("[AZ ScriptCore 0.7] DONE");writeText(STATUS,"DONE");}lua_settop(G,0);lua_gc(G,LUA_GCCOLLECT,0);}
-void worker(){ensureDir();writeText(STATUS,"INIT");G=luaL_newstate();if(!G){writeText(STATUS,"LUA_INIT_FAILED");return;}luaL_openlibs(G);reg(G);writeText(STATUS,"READY");logf("Lua 5.4 READY | Class Call Hook Array gg");for(;;){if(access(REQ,F_OK)==0){std::string q=readText(REQ,512);unlink(REQ);while(!q.empty()&&(q.back()=='\n'||q.back()=='\r'||q.back()==' '||q.back()=='\t'))q.pop_back();run(q);}usleep(100000);}}
+static void run(const std::string&name){std::string f=safe(name)?g_base+"/"+name:g_base+"/script.lua";writeText(OUT(),"[AZ ScriptCore 0.7] RUN | "+f+"\n");writeText(STATUS(),"RUNNING");int rc=luaL_loadfile(G,f.c_str());if(rc==LUA_OK)rc=lua_pcall(G,0,LUA_MULTRET,0);if(rc!=LUA_OK){const char*e=lua_tostring(G,-1);out(std::string("ERROR | ")+(e?e:"unknown"));lua_pop(G,1);writeText(STATUS(),"ERROR");}else{out("[AZ ScriptCore 0.7] DONE");writeText(STATUS(),"DONE");}lua_settop(G,0);lua_gc(G,LUA_GCCOLLECT,0);}
+void worker(){ensureDir();writeText(STATUS(),"INIT");G=luaL_newstate();if(!G){writeText(STATUS(),"LUA_INIT_FAILED");return;}luaL_openlibs(G);reg(G);writeText(STATUS(),"READY");logf("Lua 5.4 READY | Class Call Hook Array gg");for(;;){if(access(REQ(),F_OK)==0){std::string q=readText(REQ(),512);unlink(REQ());while(!q.empty()&&(q.back()=='\n'||q.back()=='\r'||q.back()==' '||q.back()=='\t'))q.pop_back();run(q);}usleep(100000);}}
 }
 extern "C" void az_lua_worker(){AZLua::worker();}
