@@ -41,6 +41,12 @@ jobs:
           path: thirdparty/lua
           fetch-depth: 1
 
+      - name: Generate Chinese glyph atlas
+        run: |
+          sudo apt-get update -y
+          sudo apt-get install -y fonts-noto-cjk python3-pil
+          python3 az/v07/gen_zh_glyphs.py az/v07/zh_glyphs.h
+
       - name: Configure
         run: |
           cmake -S az/v07 -B build-${{ matrix.abi }} -G Ninja \
