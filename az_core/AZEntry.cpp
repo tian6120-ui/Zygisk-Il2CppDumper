@@ -52,5 +52,5 @@ jint JNI_OnLoad(JavaVM* vm, void*) {
 
 extern "C" __attribute__((visibility("default")))
 const char* AZ_CoreVersion() {
-    return "AZ Tool Core 0.1";
+    return "AZ Tool Core 0.2";
 }
