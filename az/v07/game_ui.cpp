@@ -25,7 +25,6 @@
 #include "zh_glyphs.h"
 
 #define AZTAG "AZV7UI"
-extern "C" void az_lua_request_stop();
 #define AZI(...) __android_log_print(ANDROID_LOG_INFO,AZTAG,__VA_ARGS__)
 #define AZE(...) __android_log_print(ANDROID_LOG_ERROR,AZTAG,__VA_ARGS__)
 
@@ -51,7 +50,7 @@ std::mutex g_region_mu;
 float g_region[4]={18,90,125,200};
 
 std::vector<char> g_script(256*1024,0);
-std::string g_output,g_status="WAITING",g_status_name,g_status_message,g_base,g_last,g_req,g_out,g_stat,g_ui_cfg,g_scripts_dir;
+std::string g_output,g_status="WAITING",g_status_name,g_status_message,g_base,g_last,g_req,g_out,g_stat,g_stop,g_ui_cfg,g_scripts_dir;
 long long g_status_start_ms=0,g_status_elapsed_ms=0;
 double g_poll=0;
 bool g_open=false,g_autoscroll=true,g_center_next=false;
@@ -78,7 +77,7 @@ std::string pkg(){
 }
 void paths(){
  if(!g_base.empty())return;std::string files="/data/user/0/"+pkg()+"/files";g_base=files+"/AZTool";mkdir(files.c_str(),0700);mkdir(g_base.c_str(),0700);
- g_last=g_base+"/last.lua";g_req=g_base+"/script.req";g_out=g_base+"/script.out";g_stat=g_base+"/script.status";g_ui_cfg=g_base+"/ui.cfg";g_scripts_dir=g_base+"/scripts";mkdir(g_scripts_dir.c_str(),0700);
+ g_last=g_base+"/last.lua";g_req=g_base+"/script.req";g_out=g_base+"/script.out";g_stat=g_base+"/script.status";g_stop=g_base+"/stop.req";g_ui_cfg=g_base+"/ui.cfg";g_scripts_dir=g_base+"/scripts";mkdir(g_scripts_dir.c_str(),0700);
 }
 std::string rf(const std::string&p,size_t lim=2*1024*1024){
  FILE*f=fopen(p.c_str(),"rb");if(!f)return{};std::string s;char b[4096];while(!feof(f)&&s.size()<lim){size_t n=fread(b,1,sizeof(b),f);if(!n)break;if(s.size()+n>lim)n=lim-s.size();s.append(b,n);}fclose(f);return s;
@@ -188,6 +187,19 @@ bool loadScriptPath(const std::string&p){
 }
 void save(){paths();wf(g_last,std::string(g_script.data()));}
 void run(){save();wf(g_req,"last.lua\n");}
+void requestStopUI(){
+ paths();
+ wf(g_stop,"1\n");
+ long long elapsed=0;
+ if(g_status_start_ms>0)elapsed=std::max(0LL,(long long)(now()*1000.0)-g_status_start_ms);
+ char b[1024];
+ snprintf(b,sizeof(b),"state=STOPPING\nname=%s\nstart_ms=%lld\nelapsed_ms=%lld\nmessage=stop requested\n",
+          g_status_name.c_str(),g_status_start_ms,elapsed);
+ wf(g_stat,b);
+ g_status="STOPPING";
+ g_status_elapsed_ms=elapsed;
+ g_status_message="stop requested";
+}
 void addClipboardOnly(){
  auto v=clipGet();
  if(v.empty())return;
@@ -310,8 +322,7 @@ void drawRunStatusStrip(){
    ImGui::PushStyleColor(ImGuiCol_ButtonHovered,ImVec4(.88f,.18f,.20f,1));
    ImGui::PushStyleColor(ImGuiCol_ButtonActive,ImVec4(.62f,.08f,.10f,1));
    if(ImGui::Button(L("Stop","结束"),ImVec2(bw,28))){
-    az_lua_request_stop();
-    g_status="STOPPING";
+    requestStopUI();
    }
    ImGui::PopStyleColor(3);
   }else{
