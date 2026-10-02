@@ -1593,7 +1593,7 @@ bool invokeRetainedCallback(int ref, int kind, bool bv, int iv, float fv, const 
 }
 
 int l_get_version(lua_State* L) {
-    lua_pushliteral(L, "AZ Tool Core 0.1 / Lua 5.4.7");
+    lua_pushliteral(L, "AZ Tool Core 0.2 / Lua 5.4.7");
     return 1;
 }
 
@@ -1677,7 +1677,7 @@ void registerAZ(lua_State* L) {
 namespace AZLua {
 
 const char* Version() {
-    return "AZ Tool Core 0.1 / Lua 5.4.7";
+    return "AZ Tool Core 0.2 / Lua 5.4.7";
 }
 
 bool Init() {
@@ -1693,13 +1693,19 @@ bool Init() {
 
     registerClass(g_L);
     registerInstance(g_L);
+    registerInstanceFactory(g_L);
+    registerArray(g_L);
     registerCall(g_L);
+    registerUI(g_L);
+    registerGG(g_L);
     registerAZ(g_L);
 
     appendOutput("AZ Lua 5.4.7 initialized");
     appendOutput("Bindings: Class.fromName/findObjectsFresh/fields/getStaticObject/setField/new/callStatic");
     appendOutput("Bindings: Instance getAddress/getField/getFieldObject/setField/call");
     appendOutput("Bindings: Call.exact/default/pointer");
+    appendOutput("Bindings: Instance.allocate/box/materialize + Array.create");
+    appendOutput("Bindings: retained UI.* + gg alert/toast/visibility/sleep/target-info");
     return true;
 }
 
