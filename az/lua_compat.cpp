@@ -59,6 +59,8 @@ static void ensureDir(){
 static void writeText(const char *p,const std::string&s){FILE*f=fopen(p,"wb");if(!f)return;fwrite(s.data(),1,s.size(),f);fclose(f);}
 static std::string readText(const char*p,size_t lim=1048576){FILE*f=fopen(p,"rb");if(!f)return{};std::string s;char b[4096];while(!feof(f)&&s.size()<lim){size_t n=fread(b,1,sizeof(b),f);if(!n)break;if(s.size()+n>lim)n=lim-s.size();s.append(b,n);}fclose(f);return s;}
 static void out(const std::string&s){FILE*f=fopen(OUT(),"ab");if(!f)return;fwrite(s.data(),1,s.size(),f);fwrite("\n",1,1,f);fclose(f);}
+static void trace(const std::string&s){out("[TRACE] "+s);logf("TRACE %s",s.c_str());}
+
 static std::string tname(Il2CppType*t){const char*n=t?Il2cpp::GetTypeName(t):nullptr;return n?n:"";}
 static std::string shortn(std::string s){if(s.rfind("System.",0)==0)s.erase(0,7);return s;}
 static bool teq(std::string a,std::string b){return a==b||shortn(a)==shortn(b);}
@@ -73,16 +75,45 @@ static int clsstr(lua_State*L){auto*c=ckcls(L,1);lua_pushfstring(L,"<class:%s>",
 static bool isEnum(Il2CppType*t){auto*k=t?t->getClass():nullptr;return k&&Il2cpp::GetClassIsEnum(k);}
 
 static int pushManaged(lua_State*L,Il2CppObject*o,Il2CppType*t){
- std::string n=tname(t);if(n=="System.Void"||n=="Void"){lua_pushnil(L);return 1;}if(!o){lua_pushnil(L);return 1;}
- if(n=="System.String"||n=="String"){lua_pushstring(L,((Il2CppString*)o)->to_string().c_str());return 1;}
- void*p=Il2cpp::GetUnboxedValue(o);
- if(n=="System.Boolean"||n=="Boolean"){lua_pushboolean(L,p?*(bool*)p:false);return 1;}
- if(n=="System.SByte"){lua_pushinteger(L,p?*(int8_t*)p:0);return 1;} if(n=="System.Byte"){lua_pushinteger(L,p?*(uint8_t*)p:0);return 1;}
- if(n=="System.Int16"){lua_pushinteger(L,p?*(int16_t*)p:0);return 1;} if(n=="System.UInt16"||n=="System.Char"){lua_pushinteger(L,p?*(uint16_t*)p:0);return 1;}
- if(n=="System.Int32"||n=="Int32"){lua_pushinteger(L,p?*(int32_t*)p:0);return 1;} if(n=="System.UInt32"||n=="UInt32"){lua_pushinteger(L,p?*(uint32_t*)p:0);return 1;}
- if(n=="System.Int64"||n=="Int64"){lua_pushinteger(L,p?(lua_Integer)*(int64_t*)p:0);return 1;} if(n=="System.UInt64"||n=="UInt64"){lua_pushinteger(L,p?(lua_Integer)*(uint64_t*)p:0);return 1;}
- if(n=="System.Single"||n=="Single"){lua_pushnumber(L,p?*(float*)p:0);return 1;} if(n=="System.Double"||n=="Double"){lua_pushnumber(L,p?*(double*)p:0);return 1;}
- if(isEnum(t)){auto*b=Il2cpp::GetEnumBaseType(t->getClass());std::string bn=tname(b);if(bn=="System.Int64")lua_pushinteger(L,p?(lua_Integer)*(int64_t*)p:0);else if(bn=="System.UInt64")lua_pushinteger(L,p?(lua_Integer)*(uint64_t*)p:0);else if(bn=="System.Int16")lua_pushinteger(L,p?*(int16_t*)p:0);else if(bn=="System.UInt16")lua_pushinteger(L,p?*(uint16_t*)p:0);else if(bn=="System.Byte")lua_pushinteger(L,p?*(uint8_t*)p:0);else if(bn=="System.SByte")lua_pushinteger(L,p?*(int8_t*)p:0);else if(bn=="System.UInt32")lua_pushinteger(L,p?*(uint32_t*)p:0);else lua_pushinteger(L,p?*(int32_t*)p:0);return 1;}
+ std::string n=tname(t);
+ if(n=="System.Void"||n=="Void"){lua_pushnil(L);return 1;}
+ if(!o){lua_pushnil(L);return 1;}
+ if(n=="System.String"||n=="String"){
+  lua_pushstring(L,((Il2CppString*)o)->to_string().c_str());
+  return 1;
+ }
+
+ // IMPORTANT: il2cpp_object_unbox is only valid for boxed value types.
+ // SilverV7 keeps normal managed references (List<T>, classes, arrays, etc.)
+ // as object handles.  The old AZ bridge unboxed every return value first,
+ // which can SIGSEGV as soon as a method returns a List<T>.
+ auto unboxValue=[&]()->void*{return Il2cpp::GetUnboxedValue(o);};
+
+ if(n=="System.Boolean"||n=="Boolean"){void*p=unboxValue();lua_pushboolean(L,p?*(bool*)p:false);return 1;}
+ if(n=="System.SByte"){void*p=unboxValue();lua_pushinteger(L,p?*(int8_t*)p:0);return 1;}
+ if(n=="System.Byte"){void*p=unboxValue();lua_pushinteger(L,p?*(uint8_t*)p:0);return 1;}
+ if(n=="System.Int16"){void*p=unboxValue();lua_pushinteger(L,p?*(int16_t*)p:0);return 1;}
+ if(n=="System.UInt16"||n=="System.Char"){void*p=unboxValue();lua_pushinteger(L,p?*(uint16_t*)p:0);return 1;}
+ if(n=="System.Int32"||n=="Int32"){void*p=unboxValue();lua_pushinteger(L,p?*(int32_t*)p:0);return 1;}
+ if(n=="System.UInt32"||n=="UInt32"){void*p=unboxValue();lua_pushinteger(L,p?*(uint32_t*)p:0);return 1;}
+ if(n=="System.Int64"||n=="Int64"){void*p=unboxValue();lua_pushinteger(L,p?(lua_Integer)*(int64_t*)p:0);return 1;}
+ if(n=="System.UInt64"||n=="UInt64"){void*p=unboxValue();lua_pushinteger(L,p?(lua_Integer)*(uint64_t*)p:0);return 1;}
+ if(n=="System.Single"||n=="Single"){void*p=unboxValue();lua_pushnumber(L,p?*(float*)p:0);return 1;}
+ if(n=="System.Double"||n=="Double"){void*p=unboxValue();lua_pushnumber(L,p?*(double*)p:0);return 1;}
+ if(isEnum(t)){
+  void*p=unboxValue();auto*b=Il2cpp::GetEnumBaseType(t->getClass());std::string bn=tname(b);
+  if(bn=="System.Int64")lua_pushinteger(L,p?(lua_Integer)*(int64_t*)p:0);
+  else if(bn=="System.UInt64")lua_pushinteger(L,p?(lua_Integer)*(uint64_t*)p:0);
+  else if(bn=="System.Int16")lua_pushinteger(L,p?*(int16_t*)p:0);
+  else if(bn=="System.UInt16")lua_pushinteger(L,p?*(uint16_t*)p:0);
+  else if(bn=="System.Byte")lua_pushinteger(L,p?*(uint8_t*)p:0);
+  else if(bn=="System.SByte")lua_pushinteger(L,p?*(int8_t*)p:0);
+  else if(bn=="System.UInt32")lua_pushinteger(L,p?*(uint32_t*)p:0);
+  else lua_pushinteger(L,p?*(int32_t*)p:0);
+  return 1;
+ }
+
+ // Reference/array/list/class: keep the managed object intact and root it.
  return pushObj(L,o);
 }
 static Il2CppObject* box(lua_State*L,int i,Il2CppType*t){
@@ -185,10 +216,9 @@ static void mainPostThunk(){
   Il2CppException*ex=nullptr;
   Il2CppObject*r=nullptr;
   try{
-   r=Il2cpp::RuntimeInvokeConvertArgs(
-      t->method,t->recv,
-      t->args.empty()?nullptr:t->args.data(),
-      (int)t->args.size(),&ex);
+   if(t->args.empty()) r=Il2cpp::RuntimeInvoke(t->method,t->recv,nullptr,&ex);
+   else r=Il2cpp::RuntimeInvokeConvertArgs(
+      t->method,t->recv,t->args.data(),(int)t->args.size(),&ex);
   }catch(...){
    ex=(Il2CppException*)1;
   }
@@ -350,9 +380,9 @@ static MainInvokeReply invokeOnUnityMain(MethodInfo*m,Il2CppObject*recv,
  if(g_mainReady.load()&&tid==g_unityMainTid.load()){
   Il2CppException*ex=nullptr;
   try{
-   rep.result=Il2cpp::RuntimeInvokeConvertArgs(
-     m,recv,args.empty()?nullptr:const_cast<Il2CppObject**>(args.data()),
-     (int)args.size(),&ex);
+   if(args.empty()) rep.result=Il2cpp::RuntimeInvoke(m,recv,nullptr,&ex);
+   else rep.result=Il2cpp::RuntimeInvokeConvertArgs(
+     m,recv,const_cast<Il2CppObject**>(args.data()),(int)args.size(),&ex);
   }catch(...){ex=(Il2CppException*)1;}
   rep.exception=(ex!=nullptr);
   return rep;
@@ -420,20 +450,35 @@ static bool desc(lua_State*L,int i,std::string&d,std::string&n,std::vector<std::
 static MethodInfo* fromDesc(lua_State*L,int i){std::string d,n;std::vector<std::string>p;if(!desc(L,i,d,n,p))return nullptr;auto*k=Il2cpp::FindClass(d.c_str());return k?findMethod(k,n,(int)p.size(),&p):nullptr;}
 static int invoke(lua_State*L,MethodInfo*m,Il2CppObject*recv,int first,int ac){
  if(!m)return luaL_error(L,"method not found");
+ const char*mn=Il2cpp::GetMethodName(m);if(!mn)mn="?";
+ trace(std::string("invoke.begin | ")+mn+" | recv="+std::to_string((uintptr_t)recv)+" | argc="+std::to_string(ac));
+
  int n=(int)Il2cpp::GetMethodParamCount(m);
+ trace(std::string("invoke.param_count | ")+mn+" | need="+std::to_string(n));
  if(n!=ac)return luaL_error(L,"arg count need=%d got=%d",n,ac);
+
  std::vector<Il2CppObject*>a(n);
  for(int j=0;j<n;j++){
   auto*t=Il2cpp::GetMethodParam(m,j);
+  trace(std::string("invoke.marshal.begin | ")+mn+" | arg="+std::to_string(j+1)+" | type="+tname(t));
   a[j]=box(L,first+j,t);
   if(!lua_isnil(L,first+j)&&!a[j]&&!luaL_testudata(L,first+j,"AZ.Obj"))
    return luaL_error(L,"marshal arg %d as %s failed",j+1,tname(t).c_str());
+  trace(std::string("invoke.marshal.done | ")+mn+" | arg="+std::to_string(j+1));
  }
+
+ trace(std::string("invoke.runtime.begin | ")+mn+(n==0?" | RuntimeInvoke":" | ConvertArgs"));
  auto rep=invokeOnUnityMain(m,recv,a);
- if(rep.unavailable)return luaL_error(L,"Unity main-thread dispatcher unavailable in %s",Il2cpp::GetMethodName(m));
- if(rep.timeout)return luaL_error(L,"Unity main-thread invoke timeout in %s",Il2cpp::GetMethodName(m));
- if(rep.exception){releaseReply(rep);return luaL_error(L,"managed exception in %s",Il2cpp::GetMethodName(m));}
- int rc=pushManaged(L,rep.result,Il2cpp::GetMethodReturnType(m));
+ trace(std::string("invoke.runtime.done | ")+mn+" | result="+std::to_string((uintptr_t)rep.result)+" | ex="+(rep.exception?"1":"0"));
+
+ if(rep.unavailable)return luaL_error(L,"Unity main-thread dispatcher unavailable in %s",mn);
+ if(rep.timeout)return luaL_error(L,"Unity main-thread invoke timeout in %s",mn);
+ if(rep.exception){releaseReply(rep);return luaL_error(L,"managed exception in %s",mn);}
+
+ auto*rt=Il2cpp::GetMethodReturnType(m);
+ trace(std::string("invoke.return.begin | ")+mn+" | type="+tname(rt));
+ int rc=pushManaged(L,rep.result,rt);
+ trace(std::string("invoke.return.done | ")+mn);
  releaseReply(rep);
  return rc;
 }
@@ -516,7 +561,11 @@ static int pushObjectList(lua_State*L,std::vector<Il2CppObject*>v){
 
 static int findObjectsFresh(lua_State*L){
  auto*c=ckcls(L,1);
- return pushObjectList(L,(c&&c->klass)?findObjectsSafe(c->klass):std::vector<Il2CppObject*>{});
+ std::string cn=(c&&c->klass)?c->klass->getFullName():"?";
+ trace("findObjectsFresh.begin | "+cn);
+ auto v=(c&&c->klass)?findObjectsSafe(c->klass):std::vector<Il2CppObject*>{};
+ trace("findObjectsFresh.done | "+cn+" | count="+std::to_string(v.size()));
+ return pushObjectList(L,std::move(v));
 }
 
 static int findObjectsHeap(lua_State*L){
@@ -537,7 +586,21 @@ static int getField(lua_State*L){auto*o=resolve(ckobj(L,1));const char*n=luaL_ch
 static int setField(lua_State*L){auto*o=resolve(ckobj(L,1));const char*n=luaL_checkstring(L,2);if(!o)return luaL_error(L,"null object");auto*k=Il2cpp::GetObjectClass(o);auto*f=k?k->getFieldInHierarchy(n):nullptr;if(!f)return luaL_error(L,"field not found: %s",n);auto*b=box(L,3,f->getType());if(f->getType()->isObject()||f->getType()->isArray())Il2cpp::SetFieldValueObject(o,f,b);else{void*p=b?Il2cpp::GetUnboxedValue(b):nullptr;if(!p)return luaL_error(L,"field marshal failed");Il2cpp::SetFieldValue(o,f,p);}lua_pushboolean(L,1);return 1;}
 static int dynCall(lua_State*L){const char*n=lua_tostring(L,lua_upvalueindex(1));auto*o=resolve(ckobj(L,1));if(!o)return luaL_error(L,"null object");int ac=lua_gettop(L)-1;auto*m=findMethod(Il2cpp::GetObjectClass(o),n?n:"",ac);if(!m)return luaL_error(L,"method not found: %s",n?n:"?");return invoke(L,m,o,2,ac);}
 static int objIndex(lua_State*L){auto*o=resolve(ckobj(L,1));const char*k=luaL_checkstring(L,2);if(!strcmp(k,"getField")){lua_pushcfunction(L,getField);return 1;}if(!strcmp(k,"setField")){lua_pushcfunction(L,setField);return 1;}if(!o){lua_pushnil(L);return 1;}auto*c=Il2cpp::GetObjectClass(o);if(auto*f=c?c->getFieldInHierarchy(k):nullptr)return pushManaged(L,Il2cpp::GetFieldValueObject(o,f),f->getType());if(strncmp(k,"get_",4)&&strncmp(k,"set_",4)){std::string g="get_";g+=k;if(auto*m=findMethod(c,g,0))return invoke(L,m,o,0,0);}lua_pushstring(L,k);lua_pushcclosure(L,dynCall,1);return 1;}
-static int callExact(lua_State*L){auto*m=fromDesc(L,1);if(!m)return luaL_error(L,"Call.exact method not found");Il2CppObject*r=nullptr;if(luaL_testudata(L,2,"AZ.Obj"))r=resolve(ckobj(L,2));return invoke(L,m,r,3,lua_gettop(L)-2);}
+static int callExact(lua_State*L){
+ std::string d,n;std::vector<std::string>p;
+ if(!desc(L,1,d,n,p))return luaL_error(L,"Call.exact invalid descriptor");
+ trace("Call.exact.begin | "+d+"::"+n+" | desc_params="+std::to_string(p.size()));
+ auto*k=Il2cpp::FindClass(d.c_str());
+ trace("Call.exact.class | "+d+" | ptr="+std::to_string((uintptr_t)k));
+ if(!k)return luaL_error(L,"Call.exact class not found: %s",d.c_str());
+ auto*m=findMethod(k,n,(int)p.size(),&p);
+ trace("Call.exact.method | "+n+" | ptr="+std::to_string((uintptr_t)m));
+ if(!m)return luaL_error(L,"Call.exact method not found");
+ Il2CppObject*r=nullptr;
+ if(luaL_testudata(L,2,"AZ.Obj"))r=resolve(ckobj(L,2));
+ trace("Call.exact.receiver | "+n+" | ptr="+std::to_string((uintptr_t)r));
+ return invoke(L,m,r,3,lua_gettop(L)-2);
+}
 static int arrayGet(lua_State*L){auto*o=resolve(ckobj(L,1));auto*m=o?findMethod(Il2cpp::GetObjectClass(o),"GetValue",1):nullptr;if(!m)return luaL_error(L,"Array.GetValue unavailable");return invoke(L,m,o,2,1);}
 static int arrayLen(lua_State*L){auto*o=resolve(ckobj(L,1));lua_pushinteger(L,o?(lua_Integer)Il2cpp::GetArrayLength((_Il2CppArray*)o):0);return 1;}
 
