@@ -1,0 +1,67 @@
+name: AZ ScriptCore V0.7 Build
+on:
+  push:
+    branches: [az-scriptcore-v07]
+    paths:
+      - 'az/v07/**'
+      - 'az/lua_compat.cpp'
+      - '.github/workflows/az-v07-build.yml'
+  workflow_dispatch:
+
+jobs:
+  core:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        abi: [arm64-v8a, armeabi-v7a, x86_64, x86]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: az-scriptcore-v07
+
+      - uses: actions/checkout@v4
+        with:
+          repository: 2228293026/Il2CppTool
+          ref: main
+          path: thirdparty/Il2CppTool
+          fetch-depth: 1
+
+      - uses: actions/checkout@v4
+        with:
+          repository: fedes1to/Zygisk-ImGui-Menu
+          ref: main
+          path: thirdparty/Zygisk-ImGui-Menu
+          fetch-depth: 1
+
+      - uses: actions/checkout@v4
+        with:
+          repository: lua/lua
+          ref: master
+          path: thirdparty/lua
+          fetch-depth: 1
+
+      - name: Configure
+        run: |
+          cmake -S az/v07 -B build-${{ matrix.abi }} -G Ninja \
+            -DCMAKE_TOOLCHAIN_FILE="$ANDROID_NDK_HOME/build/cmake/android.toolchain.cmake" \
+            -DANDROID_ABI=${{ matrix.abi }} \
+            -DANDROID_PLATFORM=android-28 \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DIL2CPPTOOL_ROOT="$GITHUB_WORKSPACE/thirdparty/Il2CppTool" \
+            -DIMGUI_TEMPLATE_ROOT="$GITHUB_WORKSPACE/thirdparty/Zygisk-ImGui-Menu" \
+            -DLUA_ROOT="$GITHUB_WORKSPACE/thirdparty/lua"
+
+      - name: Build
+        run: cmake --build build-${{ matrix.abi }} --parallel 4
+
+      - name: Verify
+        run: |
+          file build-${{ matrix.abi }}/libAZCore07.so
+          sha256sum build-${{ matrix.abi }}/libAZCore07.so
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: AZCore07-${{ matrix.abi }}
+          path: build-${{ matrix.abi }}/libAZCore07.so
+          if-no-files-found: error
