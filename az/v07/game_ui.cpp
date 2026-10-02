@@ -36,7 +36,7 @@ using SwapFn=EGLBoolean(*)(EGLDisplay,EGLSurface);
 SwapFn g_orig_swap=nullptr;
 using AQGetEventFn=int32_t(*)(AInputQueue*,AInputEvent**);
 AQGetEventFn g_orig_aq_get=nullptr;
-using ConsumeFn=int32_t(*)(void*,void*,bool,int64_t,uint32_t*,AInputEvent**);
+using ConsumeFn=int32_t(*)(void*,void*,bool,long,uint32_t*,AInputEvent**);
 ConsumeFn g_orig_consume=nullptr;
 
 bool g_imgui=false;
@@ -275,7 +275,7 @@ EGLBoolean swapHook(EGLDisplay d,EGLSurface s){
  if(!g_imgui&&g_w>0&&g_h>0)setupImGui();if(g_imgui)draw();return g_orig_swap?g_orig_swap(d,s):EGL_FALSE;
 }
 int32_t aqHook(AInputQueue*q,AInputEvent**e){int32_t r=g_orig_aq_get?g_orig_aq_get(q,e):-1;if(r>=0&&e&&*e&&ImGui::GetCurrentContext())ImGui_ImplAndroid_HandleInputEvent(*e);return r;}
-int32_t consumeHook(void*a,void*b,bool c,int64_t d,uint32_t*e,AInputEvent**ev){int32_t r=g_orig_consume?g_orig_consume(a,b,c,d,e,ev):-1;if(r==0&&ev&&*ev&&ImGui::GetCurrentContext())ImGui_ImplAndroid_HandleInputEvent(*ev);return r;}
+int32_t consumeHook(void*a,void*b,bool c,long d,uint32_t*e,AInputEvent**ev){int32_t r=g_orig_consume?g_orig_consume(a,b,c,d,e,ev):-1;if(r==0&&ev&&*ev&&ImGui::GetCurrentContext())ImGui_ImplAndroid_HandleInputEvent(*ev);return r;}
 void hookInput(){
  void*la=dlopen("libandroid.so",RTLD_NOW|RTLD_LOCAL);void*p=la?dlsym(la,"AInputQueue_getEvent"):nullptr;
  if(p&&DobbyHook(p,(void*)aqHook,(void**)&g_orig_aq_get)==0){AZLOGI("input=AInputQueue_getEvent");return;}
