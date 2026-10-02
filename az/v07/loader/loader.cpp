@@ -7,7 +7,7 @@
 #include <cstring>
 #include <string>
 #include <atomic>
-#include "zygisk.hpp"
+#include "zygisk_min.hpp"
 
 using zygisk::Api;
 using zygisk::AppSpecializeArgs;
