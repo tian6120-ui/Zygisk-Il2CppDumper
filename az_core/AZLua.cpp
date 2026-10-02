@@ -26,6 +26,12 @@ extern "C" {
 #include "Lua/lualib.h"
 }
 
+// Symbols defined by the upstream Il2Cpp core / host UI translation unit.
+extern uint32_t (*il2cpp_array_object_header_size)();
+extern int (*il2cpp_class_array_element_size)(Il2CppClass*);
+extern void (*il2cpp_gc_wbarrier_set_field)(Il2CppObject*, void**, void*);
+extern bool collapsed;
+
 namespace {
 
 constexpr const char* MT_CLASS = "AZ.Class";
@@ -43,12 +49,6 @@ lua_State* g_L = nullptr;
 std::mutex g_luaMutex;
 std::mutex g_outputMutex;
 std::vector<std::string> g_output;
-
-// IL2CPP exports resolved by the upstream core. We use these for metadata-safe
-// array element writes rather than assuming a Unity version's array layout.
-extern uint32_t (*il2cpp_array_object_header_size)();
-extern int (*il2cpp_class_array_element_size)(Il2CppClass*);
-extern void (*il2cpp_gc_wbarrier_set_field)(Il2CppObject*, void**, void*);
 
 enum class RetainedKind {
     Text,
@@ -1447,8 +1447,6 @@ int l_gg_alert(lua_State* L) {
     lua_pushinteger(L, 1);
     return 1;
 }
-
-extern bool collapsed;
 
 int l_gg_set_visible(lua_State* L) {
     collapsed = !lua_toboolean(L, 1);
