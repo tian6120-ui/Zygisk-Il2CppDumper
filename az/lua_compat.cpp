@@ -42,6 +42,7 @@ struct Cls { Il2CppClass *klass{}; };
 struct HookRec { int id{}; MethodInfo *method{}; void *target{}; void *orig{}; };
 static lua_State *G=nullptr;
 static std::atomic<bool> g_stopRequested{false};
+static std::atomic<unsigned long long> g_managedCalls{0};
 static std::mutex g_runMetaMu;
 static std::string g_runningName;
 static long long g_runningStartMs=0;
@@ -110,7 +111,19 @@ static void luaStopHook(lua_State*L,lua_Debug*){
 }
 
 static void out(const std::string&s){FILE*f=fopen(OUT(),"ab");if(!f)return;fwrite(s.data(),1,s.size(),f);fwrite("\n",1,1,f);fclose(f);}
-static void trace(const std::string&s){out("[TRACE] "+s);logf("TRACE %s",s.c_str());}
+static void trace(const std::string&s){logf("TRACE %s",s.c_str());}
+static void managedHeartbeat(const char*method){
+ auto n=g_managedCalls.fetch_add(1,std::memory_order_relaxed)+1;
+ if((n%500ULL)==0){
+  char b[192];
+  snprintf(b,sizeof(b),"[AZ] RUNNING | managed calls=%llu | last=%s",n,method?method:"?");
+  out(b);
+  std::string name; long long start=0;
+  {std::lock_guard<std::mutex>lk(g_runMetaMu);name=g_runningName;start=g_runningStartMs;}
+  long long elapsed=start>0?std::max(0LL,monoMs()-start):0;
+  writeStatus("RUNNING",name,start,elapsed,"managed_calls="+std::to_string(n));
+ }
+}
 
 static std::string tname(Il2CppType*t){const char*n=t?Il2cpp::GetTypeName(t):nullptr;return n?n:"";}
 static std::string shortn(std::string s){if(s.rfind("System.",0)==0)s.erase(0,7);return s;}
@@ -294,7 +307,7 @@ static void mainPostThunk(){
   }
   t->result=r;
   t->exception=ex;
-  if(r&&Il2cpp::GcHandleApiResolved())t->resultHandle=Il2cpp::GC::NewHandle(r,false);
+  t->resultHandle=0;
   finishMainTask(t);
  }
 }
@@ -464,19 +477,12 @@ static MainInvokeReply invokeOnUnityMain(MethodInfo*m,Il2CppObject*recv,
   return rep;
  }
 
- /* Keep receiver + boxed arguments alive while waiting for UnityMain. */
- uint32_t recvH=0;
- std::vector<uint32_t> argH(args.size(),0);
- if(Il2cpp::GcHandleApiResolved()){
-  if(recv)recvH=Il2cpp::GC::NewHandle(recv,false);
-  for(size_t i=0;i<args.size();++i)if(args[i])argH[i]=Il2cpp::GC::NewHandle(args[i],false);
- }
-
+ /* V7-style immediate dispatch: task owns only raw managed pointers for the
+    synchronous Post round-trip. Avoid per-call GCHandle new/free on Unity 6000/Houdini. */
  MainInvokeTask task;
  task.method=m;
- task.recv=rooted(recvH,recv);
- task.args.resize(args.size());
- for(size_t i=0;i<args.size();++i)task.args[i]=rooted(argH[i],args[i]);
+ task.recv=recv;
+ task.args=args;
 
  {
   std::lock_guard<std::mutex>lk(g_mainQueueMu);
@@ -497,22 +503,18 @@ static MainInvokeReply invokeOnUnityMain(MethodInfo*m,Il2CppObject*recv,
    rep.timeout=true;
    logf("UnityMain invoke timeout method=%s",Il2cpp::GetMethodName(m));
   }else{
-   rep.result=rooted(task.resultHandle,task.result);
-   rep.resultHandle=task.resultHandle;
+   rep.result=task.result;
+   rep.resultHandle=0;
    rep.exception=(task.exception!=nullptr);
    logf("UnityMain invoke done method=%s result=%p exception=%d",
         Il2cpp::GetMethodName(m),rep.result,rep.exception?1:0);
   }
  }
 
- if(recvH)Il2cpp::GC::FreeHandle(recvH);
- for(auto h:argH)if(h)Il2cpp::GC::FreeHandle(h);
  return rep;
 }
 
-static void releaseReply(MainInvokeReply&r){
- if(r.resultHandle){Il2cpp::GC::FreeHandle(r.resultHandle);r.resultHandle=0;}
-}
+static void releaseReply(MainInvokeReply&r){r.resultHandle=0;}
 
 static bool desc(lua_State*L,int i,std::string&d,std::string&n,std::vector<std::string>&p){
  if(!lua_istable(L,i))return false;lua_getfield(L,i,"declaring");if(const char*s=lua_tostring(L,-1))d=s;lua_pop(L,1);lua_getfield(L,i,"name");if(const char*s=lua_tostring(L,-1))n=s;lua_pop(L,1);lua_getfield(L,i,"params");if(lua_istable(L,-1)){lua_Integer z=lua_rawlen(L,-1);for(lua_Integer x=1;x<=z;x++){lua_geti(L,-1,x);const char*s=lua_tostring(L,-1);p.emplace_back(s?s:"");lua_pop(L,1);}}lua_pop(L,1);return!d.empty()&&!n.empty();
@@ -538,6 +540,7 @@ static int invoke(lua_State*L,MethodInfo*m,Il2CppObject*recv,int first,int ac){
  }
 
  trace(std::string("invoke.runtime.begin | ")+mn+(n==0?" | RuntimeInvoke":" | ConvertArgs"));
+ managedHeartbeat(mn);
  auto rep=invokeOnUnityMain(m,recv,a);
  trace(std::string("invoke.runtime.done | ")+mn+" | result="+std::to_string((uintptr_t)rep.result)+" | ex="+(rep.exception?"1":"0"));
 
@@ -571,9 +574,9 @@ static void collectSingletonGetter(Il2CppClass*k,std::vector<Il2CppObject*>&out)
  for(int i=0;names[i];++i){
   auto*m=findMethod(k,names[i],0);
   if(!m||!Il2cpp::GetIsMethodStatic(m))continue;
-  Il2CppException*e=nullptr;
-  auto*o=Il2cpp::RuntimeInvokeConvertArgs(m,nullptr,nullptr,0,&e);
-  if(e||!o)continue;
+  auto rep=invokeOnUnityMain(m,nullptr,{});
+  auto*o=rep.result;
+  if(rep.exception||rep.timeout||rep.unavailable||!o)continue;
   auto*oc=Il2cpp::GetObjectClass(o);
   if(classIsOrDerived(oc,k))out.push_back(o);
  }
@@ -587,10 +590,10 @@ static void collectUnityResources(Il2CppClass*k,std::vector<Il2CppObject*>&out){
  std::vector<std::string>want={"System.Type"};
  auto*m=findMethod(res,"FindObjectsOfTypeAll",1,&want);
  if(!m||!Il2cpp::GetIsMethodStatic(m))return;
- Il2CppObject*args[1]={typeObj};
- Il2CppException*e=nullptr;
- auto*arr=Il2cpp::RuntimeInvokeConvertArgs(m,nullptr,args,1,&e);
- if(e||!arr)return;
+ std::vector<Il2CppObject*>args={typeObj};
+ auto arrRep=invokeOnUnityMain(m,nullptr,args);
+ auto*arr=arrRep.result;
+ if(arrRep.exception||arrRep.timeout||arrRep.unavailable||!arr)return;
 
  uint32_t n=Il2cpp::GetArrayLength((_Il2CppArray*)arr);
  if(n>100000)n=100000;
@@ -604,10 +607,10 @@ static void collectUnityResources(Il2CppClass*k,std::vector<Il2CppObject*>&out){
   int32_t idx=(int32_t)i;
   auto*ib=Il2cpp::GetBoxedValue(intK,&idx);
   if(!ib)continue;
-  Il2CppObject*ga[1]={ib};
-  Il2CppException*ge=nullptr;
-  auto*o=Il2cpp::RuntimeInvokeConvertArgs(getValue,arr,ga,1,&ge);
-  if(ge||!o)continue;
+  std::vector<Il2CppObject*>ga={ib};
+  auto gvRep=invokeOnUnityMain(getValue,arr,ga);
+  auto*o=gvRep.result;
+  if(gvRep.exception||gvRep.timeout||gvRep.unavailable||!o)continue;
   auto*oc=Il2cpp::GetObjectClass(o);
   if(classIsOrDerived(oc,k))out.push_back(o);
  }
@@ -758,6 +761,7 @@ static void run(const std::string&name){
  out("[API] Class.fromName | findObjectsFresh | Field | Call.exact/default | Hook | Array | gg");
  out("[OBJ] V7 ownership | userdata=raw+handle0 | call-result roots=external");
  out("[CTRL] stop=enabled | cooperative Lua interrupt");
+ out("[EXEC] V7 thread path | Lua=worker | managed calls=UnityMain Post");
 
  lua_sethook(G,luaStopHook,LUA_MASKCOUNT,2000);
  int rc=luaL_loadfile(G,f.c_str());
@@ -794,6 +798,18 @@ static void run(const std::string&name){
  lua_settop(G,0);
  lua_gc(G,LUA_GCCOLLECT,0);
 }
-void worker(){ensureDir();writeStatus("INIT");G=luaL_newstate();if(!G){writeStatus("ERROR","",0,0,"Lua init failed");return;}luaL_openlibs(G);reg(G);installMainThreadBootstrap();writeStatus("READY");logf("Lua 5.4 READY | Class Call Hook Array gg | UnityMain bootstrap=%d",g_mainHookInstalled.load()?1:0);for(;;){if(access(REQ(),F_OK)==0){std::string q=readText(REQ(),512);unlink(REQ());while(!q.empty()&&(q.back()=='\n'||q.back()=='\r'||q.back()==' '||q.back()=='\t'))q.pop_back();if(!queueScriptOnUnityMain(q)){out("ERROR | UnityMain script dispatcher unavailable");}}usleep(100000);}}
+void worker(){ensureDir();writeStatus("INIT");G=luaL_newstate();if(!G){writeStatus("ERROR","",0,0,"Lua init failed");return;}luaL_openlibs(G);reg(G);installMainThreadBootstrap();writeStatus("READY");logf("Lua 5.4 READY | Class Call Hook Array gg | UnityMain bootstrap=%d",g_mainHookInstalled.load()?1:0);for(;;){
+ if(access(REQ(),F_OK)==0){
+  std::string q=readText(REQ(),512);unlink(REQ());
+  while(!q.empty()&&(q.back()=='\n'||q.back()=='\r'||q.back()==' '||q.back()=='\t'))q.pop_back();
+  g_stopRequested.store(false,std::memory_order_relaxed);
+  if(!g_stop.empty())unlink(g_stop.c_str());
+  g_managedCalls.store(0,std::memory_order_relaxed);
+  writeStatus("QUEUED",q,0,0,"thread");
+  logf("LuaConsole: launching script thread path | name=%s",q.c_str());
+  run(q);
+ }
+ usleep(100000);
+}}
 }
 extern "C" void az_lua_worker(){AZLua::worker();}
