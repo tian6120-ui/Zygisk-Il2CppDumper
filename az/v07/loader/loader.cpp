@@ -7,6 +7,7 @@
 #include <cstring>
 #include <cstdlib>
 #include <cstdio>
+#include <cstdarg>
 #include <string>
 #include <atomic>
 #include "zygisk_min.hpp"
@@ -23,6 +24,10 @@ int g_core_fd=-1;
 int g_ui_fd=-1;
 void* g_native_core=nullptr;
 void* g_host_ui=nullptr;
+static void diag(const char*fmt,...){
+ char b[1024];va_list ap;va_start(ap,fmt);vsnprintf(b,sizeof(b),fmt,ap);va_end(ap);
+ FILE*f=fopen("/data/local/tmp/AZTool/loader.log","a");if(f){fprintf(f,"[AZLDR07] %s\n",b);fclose(f);}
+}
 
 static bool has(const char*s,const char*q){return s&&q&&strstr(s,q);}
 static bool mainUserApp(JNIEnv*e,AppSpecializeArgs*a){
@@ -55,7 +60,7 @@ static void* contextWorker(void*){
    }
    if(!app)usleep(200000);
  }
- if(app){callContext(g_native_core,e,app);callContext(g_host_ui,e,app);e->DeleteLocalRef(app);}
+ if(app){callContext(g_native_core,e,app);callContext(g_host_ui,e,app);diag("Java Context READY");e->DeleteLocalRef(app);}else diag("Java Context unavailable");
  g_vm->DetachCurrentThread();return nullptr;
 }
 
@@ -96,19 +101,21 @@ static void* loadWorker(void*){
  bool seen=false;
  for(int i=0;i<480;++i){if(mapsHas("libil2cpp.so")){seen=true;break;}usleep(250000);}
  if(!seen){if(g_ui_fd>=0){close(g_ui_fd);g_ui_fd=-1;}if(g_core_fd>=0){close(g_core_fd);g_core_fd=-1;}return nullptr;}
+ diag("IL2CPP detected | translated=%d",g_translated?1:0);
  if(g_translated)setenv("AZ_TRANSLATED_GUEST","1",1);
  if(g_ui_fd>=0){
    char p[64];snprintf(p,sizeof(p),"/proc/self/fd/%d",g_ui_fd);
    g_host_ui=dlopen(p,RTLD_NOW|RTLD_LOCAL);close(g_ui_fd);g_ui_fd=-1;
+   diag("HostUI dlopen=%s",g_host_ui?"OK":"FAIL");
    if(g_host_ui)callJniOnLoad(g_host_ui);
  }
  if(g_core_fd>=0){
    char p[64];snprintf(p,sizeof(p),"/proc/self/fd/%d",g_core_fd);
 #if defined(__i386__) || defined(__x86_64__)
-   if(g_translated){(void)nbLoad(p);}
+   if(g_translated){void*h=nbLoad(p);diag("NativeBridge guest core=%s",h?"OK":"FAIL");}
    else
 #endif
-   {g_native_core=dlopen(p,RTLD_NOW|RTLD_LOCAL);if(g_native_core)callJniOnLoad(g_native_core);}
+   {g_native_core=dlopen(p,RTLD_NOW|RTLD_LOCAL);diag("Native core dlopen=%s",g_native_core?"OK":"FAIL");if(g_native_core)callJniOnLoad(g_native_core);}
    close(g_core_fd);g_core_fd=-1;
  }
  pthread_t t{};if(pthread_create(&t,nullptr,contextWorker,nullptr)==0)pthread_detach(t);
