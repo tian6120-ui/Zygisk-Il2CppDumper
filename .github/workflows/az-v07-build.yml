@@ -52,16 +52,35 @@ jobs:
             -DIMGUI_TEMPLATE_ROOT="$GITHUB_WORKSPACE/thirdparty/Zygisk-ImGui-Menu" \
             -DLUA_ROOT="$GITHUB_WORKSPACE/thirdparty/lua"
 
-      - name: Build
+      - name: Build core and UI
         run: cmake --build build-${{ matrix.abi }} --parallel 4
+
+      - name: Configure loader
+        run: |
+          cmake -S az/v07/loader -B build-loader-${{ matrix.abi }} -G Ninja \
+            -DCMAKE_TOOLCHAIN_FILE="$ANDROID_NDK_HOME/build/cmake/android.toolchain.cmake" \
+            -DANDROID_ABI=${{ matrix.abi }} \
+            -DANDROID_PLATFORM=android-28 \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DREPO_ROOT="$GITHUB_WORKSPACE"
+
+      - name: Build loader
+        run: cmake --build build-loader-${{ matrix.abi }} --parallel 4
 
       - name: Verify
         run: |
           file build-${{ matrix.abi }}/libAZCore07.so
+          file build-${{ matrix.abi }}/libAZHostUI07.so
+          file build-loader-${{ matrix.abi }}/libAZLoader07.so
           sha256sum build-${{ matrix.abi }}/libAZCore07.so
+          sha256sum build-${{ matrix.abi }}/libAZHostUI07.so
+          sha256sum build-loader-${{ matrix.abi }}/libAZLoader07.so
 
       - uses: actions/upload-artifact@v4
         with:
-          name: AZCore07-${{ matrix.abi }}
-          path: build-${{ matrix.abi }}/libAZCore07.so
+          name: AZV07-${{ matrix.abi }}
+          path: |
+            build-${{ matrix.abi }}/libAZCore07.so
+            build-${{ matrix.abi }}/libAZHostUI07.so
+            build-loader-${{ matrix.abi }}/libAZLoader07.so
           if-no-files-found: error
