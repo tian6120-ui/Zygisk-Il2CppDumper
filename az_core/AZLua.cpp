@@ -1585,7 +1585,7 @@ bool invokeRetainedCallback(int ref, int kind, bool bv, int iv, float fv, const 
     }
 
     if (lua_pcall(g_L, argc, 0, 0) != LUA_OK) {
-        appendOutput(std::string("[UI callback error] ") + (lua_tostring(g_L, -1) ?: "unknown"));
+        appendOutput(std::string("[UI callback error] ") + (lua_tostring(g_L, -1) ? lua_tostring(g_L, -1) : "unknown"));
         lua_pop(g_L, 1);
         return false;
     }
@@ -1743,17 +1743,61 @@ bool Run(const char* code) {
 void Draw() {
     if (!g_L) Init();
 
+    static bool triedLastScript = false;
+    if (!triedLastScript) {
+        triedLastScript = true;
+        loadScript("_last.lua");
+    }
+
     ImGui::TextUnformatted("AZ Script | Lua 5.4.7");
-    ImGui::TextDisabled("Core-first build. Injection is intentionally outside this SO.");
+    ImGui::TextDisabled("Standalone core. Script storage uses the game's persistentDataPath/AZTool/scripts.");
     ImGui::Separator();
 
+    ImGui::InputText("Name", g_scriptName, sizeof(g_scriptName));
+    if (ImGui::Button("Save")) {
+        if (saveScript(g_scriptName, g_editor)) {
+            appendOutput(std::string("Saved: ") + safeScriptName(g_scriptName));
+            g_selectedScript = safeScriptName(g_scriptName);
+        } else {
+            appendOutput("Save failed");
+        }
+    }
+    ImGui::SameLine();
+    if (ImGui::Button("Load")) {
+        if (!loadScript(g_scriptName)) appendOutput("Load failed");
+        else appendOutput(std::string("Loaded: ") + safeScriptName(g_scriptName));
+    }
+    ImGui::SameLine();
+    if (ImGui::Button("Delete")) {
+        if (deleteScript(g_scriptName)) appendOutput(std::string("Deleted: ") + safeScriptName(g_scriptName));
+        else appendOutput("Delete failed");
+    }
+
+    const auto scripts = listScripts();
+    if (!scripts.empty()) {
+        const char* preview = g_selectedScript.empty() ? scripts.front().c_str() : g_selectedScript.c_str();
+        if (ImGui::BeginCombo("Scripts", preview)) {
+            for (const auto& name : scripts) {
+                const bool selected = (name == g_selectedScript);
+                if (ImGui::Selectable(name.c_str(), selected)) {
+                    loadScript(name);
+                    appendOutput(std::string("Loaded: ") + name);
+                }
+                if (selected) ImGui::SetItemDefaultFocus();
+            }
+            ImGui::EndCombo();
+        }
+    }
+
+    ImGui::Separator();
     ImVec2 avail = ImGui::GetContentRegionAvail();
-    float editorHeight = std::max(180.0f, avail.y * 0.52f);
+    float editorHeight = std::max(180.0f, avail.y * 0.50f);
     ImGui::InputTextMultiline("##AZLuaEditor", g_editor, sizeof(g_editor),
                               ImVec2(-1.0f, editorHeight),
                               ImGuiInputTextFlags_AllowTabInput);
 
     if (ImGui::Button("Run")) {
+        saveScript("_last.lua", g_editor);
         Run(g_editor);
     }
     ImGui::SameLine();
@@ -1776,6 +1820,169 @@ void Draw() {
         }
     }
     ImGui::EndChild();
+}
+
+void DrawRetainedWindows() {
+    if (!g_L) return;
+
+    std::vector<std::string> ids;
+    {
+        std::lock_guard<std::mutex> lock(g_uiMutex);
+        ids.reserve(g_windows.size());
+        for (const auto& it : g_windows) ids.push_back(it.first);
+    }
+
+    for (const auto& id : ids) {
+        struct Pending {
+            int ref{LUA_NOREF};
+            int kind{};
+            bool bv{};
+            int iv{};
+            float fv{};
+            std::string sv;
+        } pending;
+
+        {
+            std::lock_guard<std::mutex> lock(g_uiMutex);
+            auto it = g_windows.find(id);
+            if (it == g_windows.end()) continue;
+            auto& win = it->second;
+            if (!win.open) continue;
+
+            bool open = win.open;
+            if (ImGui::Begin(win.title.c_str(), &open)) {
+                for (size_t wi = 0; wi < win.widgets.size(); ++wi) {
+                    auto& w = win.widgets[wi];
+                    ImGui::PushID((id + ":" + w.id + ":" + std::to_string(wi)).c_str());
+
+                    switch (w.kind) {
+                        case RetainedKind::Text:
+                            ImGui::TextWrapped("%s", w.text.c_str());
+                            break;
+                        case RetainedKind::Separator:
+                            ImGui::Separator();
+                            break;
+                        case RetainedKind::SameLine:
+                            ImGui::SameLine();
+                            break;
+                        case RetainedKind::Button:
+                            if (ImGui::Button(w.label.c_str())) {
+                                pending.ref = w.callbackRef;
+                            }
+                            break;
+                        case RetainedKind::Checkbox: {
+                            bool v = w.boolValue;
+                            if (ImGui::Checkbox(w.label.c_str(), &v)) {
+                                w.boolValue = v;
+                                pending.ref = w.callbackRef;
+                                pending.kind = 1;
+                                pending.bv = v;
+                            }
+                            break;
+                        }
+                        case RetainedKind::InputText: {
+                            char buf[1024]{};
+                            std::snprintf(buf, sizeof(buf), "%s", w.text.c_str());
+                            if (ImGui::InputText(w.label.c_str(), buf, sizeof(buf),
+                                                 ImGuiInputTextFlags_EnterReturnsTrue)) {
+                                w.text = buf;
+                                pending.ref = w.callbackRef;
+                                pending.kind = 4;
+                                pending.sv = w.text;
+                            } else if (std::strcmp(buf, w.text.c_str()) != 0) {
+                                w.text = buf;
+                            }
+                            break;
+                        }
+                        case RetainedKind::InputInt: {
+                            int v = w.intValue;
+                            if (ImGui::InputInt(w.label.c_str(), &v, 1, 100,
+                                                ImGuiInputTextFlags_EnterReturnsTrue)) {
+                                w.intValue = v;
+                                pending.ref = w.callbackRef;
+                                pending.kind = 2;
+                                pending.iv = v;
+                            } else {
+                                w.intValue = v;
+                            }
+                            break;
+                        }
+                        case RetainedKind::InputFloat: {
+                            float v = w.floatValue;
+                            if (ImGui::InputFloat(w.label.c_str(), &v, 0.1f, 1.0f, "%.3f",
+                                                  ImGuiInputTextFlags_EnterReturnsTrue)) {
+                                w.floatValue = v;
+                                pending.ref = w.callbackRef;
+                                pending.kind = 3;
+                                pending.fv = v;
+                            } else {
+                                w.floatValue = v;
+                            }
+                            break;
+                        }
+                        case RetainedKind::SliderInt: {
+                            int v = w.intValue;
+                            if (ImGui::SliderInt(w.label.c_str(), &v, w.minValue, w.maxValue)) {
+                                w.intValue = v;
+                                pending.ref = w.callbackRef;
+                                pending.kind = 2;
+                                pending.iv = v;
+                            }
+                            break;
+                        }
+                        case RetainedKind::Combo: {
+                            int oneBased = std::max(1, w.intValue);
+                            int zeroBased = oneBased - 1;
+                            const char* preview = (zeroBased >= 0 && zeroBased < static_cast<int>(w.options.size()))
+                                ? w.options[zeroBased].c_str() : "";
+                            if (ImGui::BeginCombo(w.label.c_str(), preview)) {
+                                for (int oi = 0; oi < static_cast<int>(w.options.size()); ++oi) {
+                                    bool selected = oi == zeroBased;
+                                    if (ImGui::Selectable(w.options[oi].c_str(), selected)) {
+                                        w.intValue = oi + 1;
+                                        pending.ref = w.callbackRef;
+                                        pending.kind = 2;
+                                        pending.iv = w.intValue;
+                                    }
+                                    if (selected) ImGui::SetItemDefaultFocus();
+                                }
+                                ImGui::EndCombo();
+                            }
+                            break;
+                        }
+                    }
+
+                    ImGui::PopID();
+                    if (pending.ref != LUA_NOREF) break;
+                }
+            }
+            ImGui::End();
+            win.open = open;
+        }
+
+        if (pending.ref != LUA_NOREF) {
+            invokeRetainedCallback(pending.ref, pending.kind, pending.bv, pending.iv, pending.fv, pending.sv);
+        }
+    }
+
+    bool alert = false;
+    std::string alertText;
+    {
+        std::lock_guard<std::mutex> lock(g_uiMutex);
+        if (g_alertPending) {
+            g_alertPending = false;
+            alert = true;
+            alertText = g_alertText;
+        }
+    }
+    if (alert) ImGui::OpenPopup("AZ Alert");
+    if (ImGui::BeginPopupModal("AZ Alert", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
+        static std::string shown;
+        if (alert) shown = alertText;
+        ImGui::TextWrapped("%s", shown.c_str());
+        if (ImGui::Button("OK", ImVec2(120, 0))) ImGui::CloseCurrentPopup();
+        ImGui::EndPopup();
+    }
 }
 
 } // namespace AZLua
