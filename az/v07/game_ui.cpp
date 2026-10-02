@@ -56,7 +56,7 @@ std::string pkg(){
 }
 void paths(){
  if(!g_base.empty())return;std::string files="/data/user/0/"+pkg()+"/files";g_base=files+"/AZTool";mkdir(files.c_str(),0700);mkdir(g_base.c_str(),0700);
- g_last=g_base+"/last.lua";g_req=g_base+"/script.req";g_out=g_base+"/script.out";g_stat=g_base+"/script.status";
+ g_last=g_base+"/last.lua";g_req=g_base+"/script.req";g_out=g_base+"/script.out";g_stat=g_base+"/script.status";g_ui_cfg=g_base+"/ui.cfg";
 }
 std::string rf(const std::string&p,size_t lim=2*1024*1024){
  FILE*f=fopen(p.c_str(),"rb");if(!f)return{};std::string s;char b[4096];while(!feof(f)&&s.size()<lim){size_t n=fread(b,1,sizeof(b),f);if(!n)break;if(s.size()+n>lim)n=lim-s.size();s.append(b,n);}fclose(f);return s;
@@ -123,7 +123,24 @@ void draw(int w,int h){
      if(ImGui::Button("Copy All"))clipSet(g_output);ImGui::SameLine();if(ImGui::Button("Clear")){wf(g_out,"");g_output.clear();}ImGui::SameLine();ImGui::Checkbox("Auto-scroll",&g_autoscroll);
      ImGui::Separator();ImGui::BeginChild("out",ImVec2(0,0),true,ImGuiWindowFlags_HorizontalScrollbar);ImGui::TextUnformatted(g_output.c_str(),g_output.c_str()+g_output.size());if(g_autoscroll)ImGui::SetScrollHereY(1);ImGui::EndChild();ImGui::EndTabItem();
     }
-    if(ImGui::BeginTabItem("Info")){ImGui::Text("V7 Java Overlay: CONNECTED");ImGui::Text("Surface: %d x %d",w,h);ImGui::TextWrapped("Copy Lua -> Paste & Run -> Output -> Copy All");ImGui::EndTabItem();}
+    if(ImGui::BeginTabItem("Info")){
+      ImGui::Text("V7 Java Overlay: CONNECTED");ImGui::Text("Surface: %d x %d",w,h);
+      ImGui::Separator();
+      ImGui::Text("Display");
+      ImGui::SetNextItemWidth(180.0f);
+      if(ImGui::BeginCombo("##scale_dropdown",kFontScaleLabels[g_font_scale_idx])){
+        for(int i=0;i<7;++i){
+          bool sel=(i==g_font_scale_idx);
+          if(ImGui::Selectable(kFontScaleLabels[i],sel)){g_font_scale_idx=i;applyFontScale();saveUiConfig();}
+          if(sel)ImGui::SetItemDefaultFocus();
+        }
+        ImGui::EndCombo();
+      }
+      ImGui::SameLine();ImGui::TextDisabled("Font scale");
+      ImGui::Text("Base font: %.0f px | Effective: %.0f px",g_font_base_px,g_font_base_px*g_font_scale);
+      ImGui::TextWrapped("Copy Lua -> Paste & Run -> Output -> Copy All");
+      ImGui::EndTabItem();
+    }
     ImGui::EndTabBar();
    }
   }ImGui::End();
@@ -138,7 +155,17 @@ bool setup(GL&g,ANativeWindow*w){
   EGLint a[]={EGL_SURFACE_TYPE,EGL_WINDOW_BIT,EGL_RENDERABLE_TYPE,EGL_OPENGL_ES3_BIT,EGL_RED_SIZE,8,EGL_GREEN_SIZE,8,EGL_BLUE_SIZE,8,EGL_ALPHA_SIZE,8,EGL_NONE},n=0;if(!eglChooseConfig(g.d,a,&g.cfg,1,&n)||n<1)return false;
   EGLint ca[]={EGL_CONTEXT_CLIENT_VERSION,3,EGL_NONE};g.c=eglCreateContext(g.d,g.cfg,EGL_NO_CONTEXT,ca);if(g.c==EGL_NO_CONTEXT)return false;}
  g.w=w;ANativeWindow_acquire(g.w);g.s=eglCreateWindowSurface(g.d,g.cfg,g.w,nullptr);if(g.s==EGL_NO_SURFACE){ANativeWindow_release(g.w);g.w=nullptr;return false;}if(!eglMakeCurrent(g.d,g.s,g.s,g.c)){dropSurface(g);return false;}
- eglSwapInterval(g.d,1);if(!g.imgui){IMGUI_CHECKVERSION();ImGui::CreateContext();ImGui::GetIO().IniFilename=nullptr;style();ImGui_ImplOpenGL3_Init("#version 300 es");loadLast();g.imgui=true;}return true;
+ eglSwapInterval(g.d,1);if(!g.imgui){
+   IMGUI_CHECKVERSION();ImGui::CreateContext();
+   ImGuiIO&io=ImGui::GetIO();io.IniFilename=nullptr;
+   int sw=ANativeWindow_getWidth(w),sh=ANativeWindow_getHeight(w);int shortSide=std::max(1,std::min(sw,sh));
+   g_font_base_px=std::clamp(shortSide/45.0f,18.0f,30.0f);
+   ImFontConfig fc;fc.SizePixels=g_font_base_px;fc.OversampleH=2;fc.OversampleV=2;fc.PixelSnapH=false;
+   io.Fonts->Clear();io.FontDefault=io.Fonts->AddFontDefault(&fc);
+   loadUiConfig();applyFontScale();
+   style();ImGui_ImplOpenGL3_Init("#version 300 es");loadLast();g.imgui=true;
+   AZI("Font manager ready base=%.1f scale=%.2f",g_font_base_px,g_font_scale);
+ }return true;
 }
 void* render(void*){
  GL gl;unsigned long long active=~0ULL;timespec last{};clock_gettime(CLOCK_MONOTONIC,&last);
