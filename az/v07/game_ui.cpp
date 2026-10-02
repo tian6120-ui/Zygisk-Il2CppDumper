@@ -330,6 +330,9 @@ void drawRunStatusStrip(){
   }
  }
 
+ if((g_status=="RUNNING"||g_status=="STOPPING")&&!g_status_message.empty()){
+  ImGui::SameLine();ImGui::TextDisabled("· %s",g_status_message.c_str());
+ }
  if(g_status=="ERROR"&&!g_status_message.empty()){
   ImGui::SameLine();ImGui::TextColored(ImVec4(.98f,.45f,.45f,1),"· %s",g_status_message.c_str());
  }
