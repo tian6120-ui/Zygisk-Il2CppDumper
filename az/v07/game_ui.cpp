@@ -55,7 +55,7 @@ float g_font_base_px=20.0f;
 int g_font_scale_idx=1;
 int g_language=0; // 0 English, 1 Simplified Chinese
 int g_font_family=0; // 0 System Sans, 1 CJK Sans, 2 Mono
-std::atomic<bool> g_font_rebuild{false};
+ImFont* g_fonts[3]={nullptr,nullptr,nullptr};
 const float kFontScales[]={1.00f,1.25f,1.50f,1.75f,2.00f,2.25f,2.50f};
 const char* kFontScaleLabels[]={"100%","125%","150%","175%","200%","225%","250%"};
 const char* kFontFamilyEn[]={"System Sans","CJK Sans","Mono"};
@@ -131,34 +131,46 @@ const char* monoFontPath(){
  };
  return firstFont(p);
 }
-void requestFontRebuild(){
- g_font_scale=kFontScales[std::clamp(g_font_scale_idx,0,6)];
- g_font_rebuild=true;
+ImVector<ImWchar> buildUiZhRanges(){
+ ImFontGlyphRangesBuilder b;
+ b.AddRanges(ImGui::GetIO().Fonts->GetGlyphRangesDefault());
+ b.AddText("中文界面语言字体系统无衬线等宽大小实际字号画布脚本输出信息粘贴并运行保存载入上次复制全部清空自动滚动");
+ ImVector<ImWchar> out;b.BuildRanges(&out);return out;
 }
-bool rebuildFonts(){
- if(!ImGui::GetCurrentContext())return false;
+void mergeUiZh(float px){
+ const char*cjk=cjkFontPath();if(!cjk)return;
+ ImVector<ImWchar> ranges=buildUiZhRanges();
+ ImFontConfig m{};m.MergeMode=true;m.PixelSnapH=true;m.OversampleH=2;m.OversampleV=2;
+ ImGui::GetIO().Fonts->AddFontFromFileTTF(cjk,px,&m,ranges.Data);
+}
+void prepareFontsOnce(){
  ImGuiIO&io=ImGui::GetIO();
- const float px=std::round(g_font_base_px*g_font_scale);
- const char*mainPath=g_font_family==1?cjkFontPath():(g_font_family==2?monoFontPath():sansFontPath());
- const char*cjk=cjkFontPath();
- ImGui_ImplOpenGL3_DestroyFontsTexture();
+ const float px=g_font_base_px;
+ const char*sans=sansFontPath();const char*cjk=cjkFontPath();const char*mono=monoFontPath();
  io.Fonts->Clear();
- ImFontConfig base{};base.SizePixels=px;base.OversampleH=2;base.OversampleV=2;base.PixelSnapH=true;
- ImFont*mainFont=nullptr;
- if(mainPath){
-   const ImWchar*ranges=(g_font_family==1)?io.Fonts->GetGlyphRangesChineseSimplifiedCommon():io.Fonts->GetGlyphRangesDefault();
-   mainFont=io.Fonts->AddFontFromFileTTF(mainPath,px,&base,ranges);
- }
- if(!mainFont)mainFont=io.Fonts->AddFontDefault(&base);
- if(cjk && (!mainPath || strcmp(cjk,mainPath)!=0 || g_font_family!=1)){
-   ImFontConfig merge{};merge.MergeMode=true;merge.PixelSnapH=true;merge.OversampleH=2;merge.OversampleV=2;
-   io.Fonts->AddFontFromFileTTF(cjk,px,&merge,io.Fonts->GetGlyphRangesChineseSimplifiedCommon());
- }
- io.FontDefault=mainFont;
- io.FontGlobalScale=1.0f;
- bool ok=ImGui_ImplOpenGL3_CreateFontsTexture();
- AZI("Font rebuilt family=%d px=%.0f main=%s cjk=%s ok=%d",g_font_family,px,mainPath?mainPath:"builtin",cjk?cjk:"none",ok?1:0);
- return ok;
+ ImFontConfig fc{};fc.OversampleH=3;fc.OversampleV=2;fc.PixelSnapH=false;
+ g_fonts[0]=sans?io.Fonts->AddFontFromFileTTF(sans,px,&fc,io.Fonts->GetGlyphRangesDefault()):io.Fonts->AddFontDefault(&fc);
+ if(g_fonts[0])mergeUiZh(px);
+ ImFontConfig cc{};cc.OversampleH=2;cc.OversampleV=2;cc.PixelSnapH=false;
+ g_fonts[1]=cjk?io.Fonts->AddFontFromFileTTF(cjk,px,&cc,io.Fonts->GetGlyphRangesChineseSimplifiedCommon()):g_fonts[0];
+ ImFontConfig mc{};mc.OversampleH=3;mc.OversampleV=2;mc.PixelSnapH=false;
+ g_fonts[2]=mono?io.Fonts->AddFontFromFileTTF(mono,px,&mc,io.Fonts->GetGlyphRangesDefault()):g_fonts[0];
+ if(g_fonts[2]&&g_fonts[2]!=g_fonts[0])mergeUiZh(px);
+ if(!g_fonts[0])g_fonts[0]=io.Fonts->AddFontDefault();
+ if(!g_fonts[1])g_fonts[1]=g_fonts[0];
+ if(!g_fonts[2])g_fonts[2]=g_fonts[0];
+ io.FontDefault=g_fonts[std::clamp(g_font_family,0,2)];
+ g_font_scale=kFontScales[std::clamp(g_font_scale_idx,0,6)];
+ io.FontGlobalScale=g_font_scale;
+ AZI("V7-style fonts ready base=%.1f scale=%.2f family=%d sans=%s cjk=%s mono=%s",px,g_font_scale,g_font_family,sans?sans:"builtin",cjk?cjk:"none",mono?mono:"fallback");
+}
+void applyFontFamilyLive(){
+ int i=std::clamp(g_font_family,0,2);
+ if(g_fonts[i])ImGui::GetIO().FontDefault=g_fonts[i];
+}
+void applyV7FontScaleLive(){
+ g_font_scale=kFontScales[std::clamp(g_font_scale_idx,0,6)];
+ ImGui::GetIO().FontGlobalScale=g_font_scale;
 }
 void save(){paths();wf(g_last,std::string(g_script.data()));}
 void run(){save();wf(g_req,"last.lua\n");}
@@ -241,7 +253,7 @@ void draw(int w,int h){
         for(int i=0;i<3;++i){
           bool sel=i==g_font_family;
           const char*lab=g_language?kFontFamilyZh[i]:kFontFamilyEn[i];
-          if(ImGui::Selectable(lab,sel)){g_font_family=i;requestFontRebuild();saveUiConfig();}
+          if(ImGui::Selectable(lab,sel)){g_font_family=i;applyFontFamilyLive();saveUiConfig();}
           if(sel)ImGui::SetItemDefaultFocus();
         }
         ImGui::EndCombo();
@@ -251,7 +263,7 @@ void draw(int w,int h){
       if(ImGui::BeginCombo("##scale_dropdown",kFontScaleLabels[g_font_scale_idx])){
         for(int i=0;i<7;++i){
           bool sel=(i==g_font_scale_idx);
-          if(ImGui::Selectable(kFontScaleLabels[i],sel)){g_font_scale_idx=i;requestFontRebuild();saveUiConfig();}
+          if(ImGui::Selectable(kFontScaleLabels[i],sel)){g_font_scale_idx=i;applyV7FontScaleLive();saveUiConfig();}
           if(sel)ImGui::SetItemDefaultFocus();
         }
         ImGui::EndCombo();
@@ -280,7 +292,8 @@ bool setup(GL&g,ANativeWindow*w){
    int sw=ANativeWindow_getWidth(w),sh=ANativeWindow_getHeight(w);int shortSide=std::max(1,std::min(sw,sh));
    g_font_base_px=std::clamp(shortSide/45.0f,18.0f,30.0f);
    loadUiConfig();
-   style();ImGui_ImplOpenGL3_Init("#version 300 es");rebuildFonts();loadLast();g.imgui=true;
+   prepareFontsOnce();
+   style();ImGui_ImplOpenGL3_Init("#version 300 es");loadLast();g.imgui=true;
    AZI("Font manager ready base=%.1f scale=%.2f language=%d family=%d",g_font_base_px,g_font_scale,g_language,g_font_family);
  }return true;
 }
@@ -290,7 +303,6 @@ void* render(void*){
   auto gen=g_surface_gen.load();if(gen!=active){dropSurface(gl);ANativeWindow*w=nullptr;{std::lock_guard<std::mutex>lk(g_win_mu);if(g_window){ANativeWindow_acquire(g_window);w=g_window;}}if(w){setup(gl,w);ANativeWindow_release(w);}active=gen;}
   if(gl.s==EGL_NO_SURFACE||!gl.imgui){usleep(16000);continue;}int w=g_w.load(),h=g_h.load();if(w<=0||h<=0){usleep(16000);continue;}
   timespec t{};clock_gettime(CLOCK_MONOTONIC,&t);double dt=(t.tv_sec-last.tv_sec)+(t.tv_nsec-last.tv_nsec)/1e9;if(dt<=0||dt>.25)dt=1.0/60.0;last=t;
-  if(g_font_rebuild.exchange(false))rebuildFonts();
   ImGuiIO&io=ImGui::GetIO();io.DisplaySize=ImVec2((float)w,(float)h);io.DeltaTime=(float)dt;input();ImGui_ImplOpenGL3_NewFrame();ImGui::NewFrame();draw(w,h);ImGui::Render();
   glViewport(0,0,w,h);glDisable(GL_DEPTH_TEST);glEnable(GL_BLEND);glBlendFunc(GL_SRC_ALPHA,GL_ONE_MINUS_SRC_ALPHA);glClearColor(0,0,0,0);glClear(GL_COLOR_BUFFER_BIT);ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());eglSwapBuffers(gl.d,gl.s);
  }
