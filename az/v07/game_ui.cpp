@@ -53,7 +53,6 @@ bool g_open=false,g_autoscroll=true,g_center_next=false;
 float g_font_scale=1.25f;
 float g_font_base_px=20.0f;
 int g_font_scale_idx=1;
-int g_language=0; // 0 English, 1 Simplified Chinese
 ImFont* g_main_font=nullptr;
 const float kFontScales[]={1.00f,1.25f,1.50f,1.75f,2.00f,2.25f,2.50f};
 const char* kFontScaleLabels[]={"100%","125%","150%","175%","200%","225%","250%"};
@@ -87,11 +86,10 @@ void loadUiConfig(){
  int best=1;float d=1000.f;
  for(int i=0;i<7;++i){float nd=fabsf(kFontScales[i]-v);if(nd<d){d=nd;best=i;}}
  g_font_scale_idx=best;g_font_scale=kFontScales[best];
- g_language=std::clamp(cfgInt(s,"language=",0),0,1);
 }
 void saveUiConfig(){
  paths();char b[160];
- snprintf(b,sizeof(b),"fontScale=%.2f\nlanguage=%d\n",g_font_scale,g_language);
+ snprintf(b,sizeof(b),"fontScale=%.2f\n",g_font_scale);
  wf(g_ui_cfg,b);
 }
 bool fileExists(const char*p){return p&&access(p,R_OK)==0;}
@@ -108,16 +106,6 @@ const char* robotoMediumPath(){
  };
  return firstFont(p);
 }
-const char* cjkFontPath(){
- static const char*const p[]={
-  "/system/fonts/NotoSansCJK-Regular.ttc",
-  "/system/fonts/NotoSansSC-Regular.otf",
-  "/system/fonts/NotoSansCJKsc-Regular.otf",
-  "/system/fonts/DroidSansFallback.ttf",
-  nullptr
- };
- return firstFont(p);
-}
 void prepareV7FontOnce(){
  ImGuiIO&io=ImGui::GetIO();
  const float px=g_font_base_px;
@@ -125,20 +113,11 @@ void prepareV7FontOnce(){
  io.Fonts->Clear();
  ImFontConfig base{};base.OversampleH=3;base.OversampleV=2;base.PixelSnapH=false;
  g_main_font=roboto?io.Fonts->AddFontFromFileTTF(roboto,px,&base,io.Fonts->GetGlyphRangesDefault()):io.Fonts->AddFontDefault(&base);
- // Keep Chinese support tiny: only the glyphs used by this UI, merged once at startup.
- const char*cjk=cjkFontPath();
- if(cjk&&g_main_font){
-   ImFontGlyphRangesBuilder b;
-   b.AddRanges(io.Fonts->GetGlyphRangesDefault());
-   b.AddText("中文脚本输出信息界面语言字体大小实际字号画布粘贴并运行保存载入上次复制全部清空自动滚动状态连接");
-   ImVector<ImWchar> ranges;b.BuildRanges(&ranges);
-   ImFontConfig merge{};merge.MergeMode=true;merge.PixelSnapH=true;merge.OversampleH=2;merge.OversampleV=2;
-   io.Fonts->AddFontFromFileTTF(cjk,px,&merge,ranges.Data);
- }
- io.FontDefault=g_main_font?g_main_font:io.Fonts->AddFontDefault();
+ if(!g_main_font)g_main_font=io.Fonts->AddFontDefault();
+ io.FontDefault=g_main_font;
  g_font_scale=kFontScales[std::clamp(g_font_scale_idx,0,6)];
  io.FontGlobalScale=g_font_scale;
- AZI("V7 font ready base=%.1f scale=%.2f roboto=%s cjk=%s",px,g_font_scale,roboto?roboto:"builtin",cjk?cjk:"none");
+ AZI("V7 font ready base=%.1f scale=%.2f font=%s",px,g_font_scale,roboto?roboto:"builtin");
 }
 void applyV7FontScaleLive(){
  g_font_scale=kFontScales[std::clamp(g_font_scale_idx,0,6)];
@@ -193,32 +172,24 @@ void draw(int w,int h){
   float ph=std::min((float)h-70.0f,std::max(540.0f,h*.76f));
   if(g_center_next){ImGui::SetNextWindowPos(ImVec2(w*.5f,h*.5f),ImGuiCond_Always,ImVec2(.5f,.5f));g_center_next=false;}
   ImGui::SetNextWindowSize(ImVec2(pw,ph),ImGuiCond_Once);
-  const char* title=g_language?"AZ ScriptCore V0.7 - 中文":"AZ ScriptCore V0.7";
+  const char* title="AZ ScriptCore V0.8";
   if(ImGui::Begin(title,&g_open,ImGuiWindowFlags_NoSavedSettings)){
    auto p=ImGui::GetWindowPos(),s=ImGui::GetWindowSize();x1=std::min(x1,p.x);y1=std::min(y1,p.y);x2=std::max(x2,p.x+s.x);y2=std::max(y2,p.y+s.y);
    ImGui::Text("Status: %s",g_status.empty()?"WAITING":g_status.c_str());ImGui::SameLine();ImGui::TextDisabled("| %s",pkg().c_str());
    if(ImGui::BeginTabBar("tabs")){
-    if(ImGui::BeginTabItem(g_language?"脚本":"Script")){
-     if(ImGui::Button(g_language?"粘贴并运行":"Paste & Run")){auto s=clipGet();if(!s.empty()){memset(g_script.data(),0,g_script.size());memcpy(g_script.data(),s.data(),std::min(s.size(),g_script.size()-1));run();}}
-     ImGui::SameLine();if(ImGui::Button(g_language?"运行":"Run"))run();ImGui::SameLine();if(ImGui::Button(g_language?"保存":"Save"))save();ImGui::SameLine();if(ImGui::Button(g_language?"载入上次":"Load Last"))loadLast();ImGui::SameLine();if(ImGui::Button(g_language?"复制":"Copy"))clipSet(std::string(g_script.data()));
+    if(ImGui::BeginTabItem("Script")){
+     if(ImGui::Button("Paste & Run")){auto s=clipGet();if(!s.empty()){memset(g_script.data(),0,g_script.size());memcpy(g_script.data(),s.data(),std::min(s.size(),g_script.size()-1));run();}}
+     ImGui::SameLine();if(ImGui::Button("Run"))run();ImGui::SameLine();if(ImGui::Button("Save"))save();ImGui::SameLine();if(ImGui::Button("Load Last"))loadLast();ImGui::SameLine();if(ImGui::Button("Copy"))clipSet(std::string(g_script.data()));
      ImGui::Separator();ImGui::InputTextMultiline("##lua",g_script.data(),g_script.size(),ImVec2(-1,-1),ImGuiInputTextFlags_AllowTabInput);ImGui::EndTabItem();
     }
-    if(ImGui::BeginTabItem(g_language?"输出":"Output")){
-     if(ImGui::Button(g_language?"复制全部":"Copy All"))clipSet(g_output);ImGui::SameLine();if(ImGui::Button(g_language?"清空":"Clear")){wf(g_out,"");g_output.clear();}ImGui::SameLine();ImGui::Checkbox(g_language?"自动滚动":"Auto-scroll",&g_autoscroll);
+    if(ImGui::BeginTabItem("Output")){
+     if(ImGui::Button("Copy All"))clipSet(g_output);ImGui::SameLine();if(ImGui::Button("Clear")){wf(g_out,"");g_output.clear();}ImGui::SameLine();ImGui::Checkbox("Auto-scroll",&g_autoscroll);
      ImGui::Separator();ImGui::BeginChild("out",ImVec2(0,0),true,ImGuiWindowFlags_HorizontalScrollbar);ImGui::TextUnformatted(g_output.c_str(),g_output.c_str()+g_output.size());if(g_autoscroll)ImGui::SetScrollHereY(1);ImGui::EndChild();ImGui::EndTabItem();
     }
-    if(ImGui::BeginTabItem(g_language?"信息":"Info")){
-      ImGui::Text("V7 Java Overlay: CONNECTED");ImGui::Text(g_language?"画布: %d x %d":"Surface: %d x %d",w,h);
+    if(ImGui::BeginTabItem("Info")){
+      ImGui::Text("V7 Java Overlay: CONNECTED");ImGui::Text("Surface: %d x %d",w,h);
       ImGui::Separator();
-      ImGui::Text(g_language?"界面语言":"Language");
-      ImGui::SetNextItemWidth(210.0f);
-      const char*langLabel=g_language?"中文":"English";
-      if(ImGui::BeginCombo("##language",langLabel)){
-        if(ImGui::Selectable("English",g_language==0)){g_language=0;saveUiConfig();}
-        if(ImGui::Selectable("中文",g_language==1)){g_language=1;saveUiConfig();}
-        ImGui::EndCombo();
-      }
-      ImGui::Text(g_language?"字体大小":"Font size");
+      ImGui::Text("Font size");
       ImGui::SetNextItemWidth(210.0f);
       if(ImGui::BeginCombo("##scale_dropdown",kFontScaleLabels[g_font_scale_idx])){
         for(int i=0;i<7;++i){
@@ -228,8 +199,8 @@ void draw(int w,int h){
         }
         ImGui::EndCombo();
       }
-      ImGui::Text(g_language?"实际字号: %.0f px":"Rendered font: %.0f px",std::round(g_font_base_px*g_font_scale));
-      ImGui::TextWrapped(g_language?"复制 Lua -> 粘贴并运行 -> 输出 -> 复制全部":"Copy Lua -> Paste & Run -> Output -> Copy All");
+      ImGui::Text("Rendered font: %.0f px",std::round(g_font_base_px*g_font_scale));
+      ImGui::TextWrapped("Copy Lua -> Paste & Run -> Output -> Copy All");
       ImGui::EndTabItem();
     }
     ImGui::EndTabBar();
@@ -254,7 +225,7 @@ bool setup(GL&g,ANativeWindow*w){
    loadUiConfig();
    prepareV7FontOnce();
    style();ImGui_ImplOpenGL3_Init("#version 300 es");loadLast();g.imgui=true;
-   AZI("Font manager ready base=%.1f scale=%.2f language=%d",g_font_base_px,g_font_scale,g_language);
+   AZI("Font manager ready base=%.1f scale=%.2f",g_font_base_px,g_font_scale);
  }return true;
 }
 void* render(void*){
