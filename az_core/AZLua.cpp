@@ -83,6 +83,12 @@ struct RetainedWindow {
 std::mutex g_uiMutex;
 std::unordered_map<std::string, RetainedWindow> g_windows;
 char g_scriptName[128] = "script.lua";
+
+// Forward declarations used by the call argument converter.
+Il2CppObject* boxDefaultForType(Il2CppType* type);
+bool tableHasBoolField(lua_State* L, int idx, const char* key);
+lua_Integer tableIntegerField(lua_State* L, int idx, const char* key, lua_Integer fallback);
+
 std::string g_selectedScript;
 bool g_alertPending = false;
 std::string g_alertText;
@@ -599,6 +605,28 @@ int l_instance_set_field(lua_State* L) {
 Il2CppObject* boxLuaValue(lua_State* L, int idx, Il2CppType* type) {
     if (!type) return nullptr;
     if (lua_isnil(L, idx)) return nullptr;
+
+    // V7-style explicit argument markers. They avoid guessing whether integer 0
+    // means "default value" or a real numeric zero, and make pointer arguments
+    // opt-in rather than silently interpreting every Lua integer as an address.
+    if (lua_istable(L, idx) && tableHasBoolField(L, idx, "__az_default")) {
+        return boxDefaultForType(type);
+    }
+    if (lua_istable(L, idx) && tableHasBoolField(L, idx, "__az_pointer")) {
+        const uintptr_t p = static_cast<uintptr_t>(tableIntegerField(L, idx, "address", 0));
+        switch (type->type) {
+            case IL2CPP_TYPE_I:
+            case IL2CPP_TYPE_U:
+            case IL2CPP_TYPE_PTR: {
+                auto* klass = type->getClass();
+                if (!klass) return nullptr;
+                uintptr_t raw = p;
+                return Il2cpp::GetBoxedValue(klass, &raw);
+            }
+            default:
+                return nullptr;
+        }
+    }
 
     switch (type->type) {
         case IL2CPP_TYPE_BOOLEAN: {
