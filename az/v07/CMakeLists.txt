@@ -21,6 +21,7 @@ list(FILTER LUA_SRC EXCLUDE REGEX "/(lua|luac|onelua)\\.c$")
 
 add_library(az_scriptcore SHARED
   core.cpp
+  game_ui.cpp
   ../lua_compat.cpp
   ${IT}/Il2cpp/Il2cpp.cpp
   ${IT}/Il2cpp/il2cpp-class.cpp
@@ -40,6 +41,8 @@ add_library(az_scriptcore SHARED
   ${IT}/imgui/imgui_draw.cpp
   ${IT}/imgui/imgui_widgets.cpp
   ${IT}/imgui/imgui_tables.cpp
+  ${TP}/ImGui/backends/imgui_impl_opengl3.cpp
+  ${TP}/ImGui/backends/imgui_impl_android.cpp
   ${LUA_SRC}
 )
 target_include_directories(az_scriptcore PRIVATE
@@ -47,6 +50,8 @@ target_include_directories(az_scriptcore PRIVATE
   ${IT}/Il2cpp
   ${IT}/Il2cpp/xdl
   ${IT}/imgui
+  ${TP}/ImGui
+  ${TP}/ImGui/backends
   ${LUA_ROOT}
   ${TP}/Includes
 )
@@ -54,7 +59,31 @@ add_library(dobby STATIC IMPORTED)
 set_target_properties(dobby PROPERTIES IMPORTED_LOCATION "${TP}/libs/${ANDROID_ABI}/libdobby.a")
 find_library(log-lib log)
 find_library(dl-lib dl)
+find_library(android-lib android)
+find_library(egl-lib EGL)
+find_library(gles3-lib GLESv3)
 target_compile_options(az_scriptcore PRIVATE -O2 -fPIC -fvisibility=hidden -fexceptions)
 target_link_options(az_scriptcore PRIVATE -Wl,--gc-sections -Wl,--strip-all)
-target_link_libraries(az_scriptcore dobby ${log-lib} ${dl-lib})
+target_link_libraries(az_scriptcore dobby ${log-lib} ${dl-lib} ${android-lib} ${egl-lib} ${gles3-lib})
 set_target_properties(az_scriptcore PROPERTIES OUTPUT_NAME "AZCore07")
+
+
+add_library(az_hostui SHARED
+  ui_host.cpp
+  game_ui.cpp
+  ${TP}/ImGui/imgui.cpp
+  ${TP}/ImGui/imgui_draw.cpp
+  ${TP}/ImGui/imgui_widgets.cpp
+  ${TP}/ImGui/imgui_tables.cpp
+  ${TP}/ImGui/backends/imgui_impl_opengl3.cpp
+  ${TP}/ImGui/backends/imgui_impl_android.cpp
+)
+target_include_directories(az_hostui PRIVATE
+  ${TP}/ImGui
+  ${TP}/ImGui/backends
+  ${TP}/Includes
+)
+target_compile_options(az_hostui PRIVATE -O2 -fPIC -fvisibility=hidden -fexceptions)
+target_link_options(az_hostui PRIVATE -Wl,--gc-sections -Wl,--strip-all)
+target_link_libraries(az_hostui dobby ${log-lib} ${dl-lib} ${android-lib} ${egl-lib} ${gles3-lib})
+set_target_properties(az_hostui PROPERTIES OUTPUT_NAME "AZHostUI07")
