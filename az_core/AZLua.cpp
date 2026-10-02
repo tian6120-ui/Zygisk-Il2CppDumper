@@ -1969,8 +1969,21 @@ bool Init() {
 }
 
 void Shutdown() {
+    std::vector<uintptr_t> patchKeys;
+    {
+        std::lock_guard<std::mutex> patchLock(g_patchMutex);
+        patchKeys.reserve(g_returnPatches.size());
+        for (const auto& it : g_returnPatches) patchKeys.push_back(it.first);
+    }
+    for (auto key : patchKeys) restorePatchByAddress(key);
+
     std::lock_guard<std::mutex> lock(g_luaMutex);
     if (g_L) {
+        {
+            std::lock_guard<std::mutex> uiLock(g_uiMutex);
+            for (auto& it : g_windows) releaseWindowRefs(g_L, it.second);
+            g_windows.clear();
+        }
         lua_close(g_L);
         g_L = nullptr;
     }
