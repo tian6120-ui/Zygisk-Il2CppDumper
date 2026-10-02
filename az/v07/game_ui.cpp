@@ -179,6 +179,37 @@ bool registerV7(JNIEnv*e){
 
 extern "C" void az_ui_set_vm(JavaVM*vm){if(vm)g_vm=vm;}
 extern "C" void az_ui_set_context(JNIEnv*e,jobject activity){
- if(!e||!activity)return;{std::lock_guard<std::mutex>lk(g_jni_mu);if(g_activity)e->DeleteGlobalRef(g_activity);g_activity=e->NewGlobalRef(activity);}registerV7(e);
+ if(!e||!activity)return;
+ {
+   std::lock_guard<std::mutex>lk(g_jni_mu);
+   if(g_activity)e->DeleteGlobalRef(g_activity);
+   g_activity=e->NewGlobalRef(activity);
+ }
+ if(!registerV7(e)){
+   AZE("V7 Overlay registration failed");
+   return;
+ }
+ jclass oc=e->FindClass("com/mxp/OverlaySurface");
+ if(!oc){
+   if(e->ExceptionCheck())e->ExceptionClear();
+   AZE("OverlaySurface.show: class unavailable");
+   return;
+ }
+ jmethodID show=e->GetStaticMethodID(oc,"show","(Landroid/app/Activity;)V");
+ if(!show){
+   if(e->ExceptionCheck())e->ExceptionClear();
+   AZE("OverlaySurface.show: method unavailable");
+   e->DeleteLocalRef(oc);
+   return;
+ }
+ e->CallStaticVoidMethod(oc,show,activity);
+ if(e->ExceptionCheck()){
+   e->ExceptionClear();
+   AZE("OverlaySurface.show: Java exception");
+ }else{
+   AZI("OverlaySurface.show(activity) invoked");
+ }
+ e->DeleteLocalRef(oc);
+ startRender();
 }
 extern "C" void az_ui_activate(){g_active=true;startRender();}
