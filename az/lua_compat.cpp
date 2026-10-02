@@ -25,7 +25,7 @@ extern "C" {
 }
 
 namespace AZLua {
-static std::string g_pkg, g_base, g_req, g_out, g_status;
+static std::string g_pkg, g_base, g_req, g_out, g_status, g_stop;
 static std::string procPackage(){
  FILE*f=fopen("/proc/self/cmdline","rb"); if(!f)return "unknown";
  char b[256]{}; size_t n=fread(b,1,sizeof(b)-1,f); fclose(f);
@@ -73,7 +73,7 @@ static void logf(const char *fmt,...){
 static void ensureDir(){
  g_pkg=procPackage();
  std::string files="/data/user/0/"+g_pkg+"/files";
- g_base=files+"/AZTool"; g_req=g_base+"/script.req"; g_out=g_base+"/script.out"; g_status=g_base+"/script.status";
+ g_base=files+"/AZTool"; g_req=g_base+"/script.req"; g_out=g_base+"/script.out"; g_status=g_base+"/script.status"; g_stop=g_base+"/stop.req";
  mkdir(files.c_str(),0700); mkdir(g_base.c_str(),0700);
 }
 static void writeText(const char *p,const std::string&s){FILE*f=fopen(p,"wb");if(!f)return;fwrite(s.data(),1,s.size(),f);fclose(f);}
@@ -88,22 +88,27 @@ static void writeStatus(const char*state,const std::string&name="",long long sta
  rename(tmp.c_str(),g_status.c_str());
 }
 
-static void luaStopHook(lua_State*L,lua_Debug*){
- if(g_stopRequested.load(std::memory_order_relaxed))
-  luaL_error(L,"__AZ_STOP_REQUESTED__");
+static bool stopRequested(){
+ if(g_stopRequested.load(std::memory_order_relaxed))return true;
+ if(!g_stop.empty()&&access(g_stop.c_str(),F_OK)==0){
+  g_stopRequested.store(true,std::memory_order_relaxed);
+  std::string name; long long start=0;
+  {
+   std::lock_guard<std::mutex>lk(g_runMetaMu);
+   name=g_runningName; start=g_runningStartMs;
+  }
+  long long elapsed=start>0?std::max(0LL,monoMs()-start):0;
+  writeStatus("STOPPING",name,start,elapsed,"stop requested");
+  logf("Stop request observed | name=%s elapsed=%lldms",name.c_str(),elapsed);
+  return true;
+ }
+ return false;
 }
 
-static void requestStop(){
- g_stopRequested.store(true,std::memory_order_relaxed);
- std::string name; long long start=0;
- {
-  std::lock_guard<std::mutex>lk(g_runMetaMu);
-  name=g_runningName; start=g_runningStartMs;
- }
- long long elapsed=start>0?std::max(0LL,monoMs()-start):0;
- writeStatus("STOPPING",name,start,elapsed,"stop requested");
- logf("Stop requested | name=%s elapsed=%lldms",name.c_str(),elapsed);
+static void luaStopHook(lua_State*L,lua_Debug*){
+ if(stopRequested())luaL_error(L,"__AZ_STOP_REQUESTED__");
 }
+
 static void out(const std::string&s){FILE*f=fopen(OUT(),"ab");if(!f)return;fwrite(s.data(),1,s.size(),f);fwrite("\n",1,1,f);fclose(f);}
 static void trace(const std::string&s){out("[TRACE] "+s);logf("TRACE %s",s.c_str());}
 
@@ -706,6 +711,7 @@ static const char* coreAbi(){
 }
 static bool queueScriptOnUnityMain(const std::string&name){
  g_stopRequested.store(false,std::memory_order_relaxed);
+ if(!g_stop.empty())unlink(g_stop.c_str());
  {
   std::lock_guard<std::mutex>lk(g_runMetaMu);
   g_runningName=name; g_runningStartMs=0;
@@ -737,10 +743,11 @@ static void run(const std::string&name){
   g_runningName=name; g_runningStartMs=start;
  }
 
- if(g_stopRequested.load(std::memory_order_relaxed)){
+ if(stopRequested()){
   out("[AZ ScriptCore] STOPPED before start");
   writeStatus("STOPPED",name,start,0,"stopped by user");
   g_stopRequested.store(false,std::memory_order_relaxed);
+  if(!g_stop.empty())unlink(g_stop.c_str());
   std::lock_guard<std::mutex>lk(g_runMetaMu);g_runningName.clear();g_runningStartMs=0;
   return;
  }
@@ -758,7 +765,7 @@ static void run(const std::string&name){
  lua_sethook(G,nullptr,0,0);
 
  long long elapsed=monoMs()-start;
- bool stopped=g_stopRequested.load(std::memory_order_relaxed);
+ bool stopped=stopRequested();
  const char*err=(rc!=LUA_OK)?lua_tostring(G,-1):nullptr;
  if(err&&strstr(err,"__AZ_STOP_REQUESTED__"))stopped=true;
 
@@ -779,6 +786,7 @@ static void run(const std::string&name){
  }
 
  g_stopRequested.store(false,std::memory_order_relaxed);
+ if(!g_stop.empty())unlink(g_stop.c_str());
  {
   std::lock_guard<std::mutex>lk(g_runMetaMu);
   g_runningName.clear();g_runningStartMs=0;
@@ -789,4 +797,3 @@ static void run(const std::string&name){
 void worker(){ensureDir();writeStatus("INIT");G=luaL_newstate();if(!G){writeStatus("ERROR","",0,0,"Lua init failed");return;}luaL_openlibs(G);reg(G);installMainThreadBootstrap();writeStatus("READY");logf("Lua 5.4 READY | Class Call Hook Array gg | UnityMain bootstrap=%d",g_mainHookInstalled.load()?1:0);for(;;){if(access(REQ(),F_OK)==0){std::string q=readText(REQ(),512);unlink(REQ());while(!q.empty()&&(q.back()=='\n'||q.back()=='\r'||q.back()==' '||q.back()=='\t'))q.pop_back();if(!queueScriptOnUnityMain(q)){out("ERROR | UnityMain script dispatcher unavailable");}}usleep(100000);}}
 }
 extern "C" void az_lua_worker(){AZLua::worker();}
-extern "C" void az_lua_request_stop(){AZLua::requestStop();}
