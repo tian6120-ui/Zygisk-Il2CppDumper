@@ -4,9 +4,12 @@
 #include <array>
 #include <cstdint>
 #include <cstring>
+#include <filesystem>
+#include <fstream>
 #include <mutex>
 #include <sstream>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 #include "Il2cpp/Il2cpp.h"
@@ -36,6 +39,54 @@ lua_State* g_L = nullptr;
 std::mutex g_luaMutex;
 std::mutex g_outputMutex;
 std::vector<std::string> g_output;
+
+// IL2CPP exports resolved by the upstream core. We use these for metadata-safe
+// array element writes rather than assuming a Unity version's array layout.
+extern uint32_t (*il2cpp_array_object_header_size)();
+extern int (*il2cpp_class_array_element_size)(Il2CppClass*);
+extern void (*il2cpp_gc_wbarrier_set_field)(Il2CppObject*, void**, void*);
+
+enum class RetainedKind {
+    Text,
+    Separator,
+    SameLine,
+    Button,
+    Checkbox,
+    InputText,
+    InputInt,
+    InputFloat,
+    SliderInt,
+    Combo
+};
+
+struct RetainedWidget {
+    RetainedKind kind{RetainedKind::Text};
+    std::string id;
+    std::string label;
+    std::string text;
+    bool boolValue{};
+    int intValue{};
+    int minValue{};
+    int maxValue{100};
+    float floatValue{};
+    std::vector<std::string> options;
+    int callbackRef{LUA_NOREF};
+};
+
+struct RetainedWindow {
+    std::string id;
+    std::string title;
+    bool open{true};
+    std::vector<RetainedWidget> widgets;
+};
+
+std::mutex g_uiMutex;
+std::unordered_map<std::string, RetainedWindow> g_windows;
+char g_scriptName[128] = "script.lua";
+std::string g_selectedScript;
+bool g_alertPending = false;
+std::string g_alertText;
+
 char g_editor[64 * 1024] =
     "-- AZ Tool Lua 5.4.7\n"
     "-- Example:\n"
