@@ -138,7 +138,18 @@ static void reg(lua_State*L){
  lua_pushcfunction(L,azPrint);lua_setglobal(L,"print");lua_getglobal(L,"load");lua_setglobal(L,"loadstring");lua_pushliteral(L,"AZ ScriptCore 0.7");lua_setglobal(L,"AZ_VERSION");
 }
 static bool safe(const std::string&s){return!s.empty()&&s.size()<240&&s.find("..")==std::string::npos&&s.find('/')==std::string::npos&&s.find('\\')==std::string::npos&&s.size()>4&&s.substr(s.size()-4)==".lua";}
-static void run(const std::string&name){std::string f=safe(name)?g_base+"/"+name:g_base+"/script.lua";writeText(OUT(),"[AZ ScriptCore 0.7] RUN | "+f+"\n");writeText(STATUS(),"RUNNING");int rc=luaL_loadfile(G,f.c_str());if(rc==LUA_OK)rc=lua_pcall(G,0,LUA_MULTRET,0);if(rc!=LUA_OK){const char*e=lua_tostring(G,-1);out(std::string("ERROR | ")+(e?e:"unknown"));lua_pop(G,1);writeText(STATUS(),"ERROR");}else{out("[AZ ScriptCore 0.7] DONE");writeText(STATUS(),"DONE");}lua_settop(G,0);lua_gc(G,LUA_GCCOLLECT,0);}
+static const char* coreAbi(){
+#if defined(__aarch64__)
+ return "arm64";
+#elif defined(__arm__)
+ return "arm32";
+#elif defined(__x86_64__)
+ return "x86_64";
+#else
+ return "x86";
+#endif
+}
+static void run(const std::string&name){std::string f=safe(name)?g_base+"/"+name:g_base+"/script.lua";writeText(OUT(),"[AZ ScriptCore V0.7] RUN | "+f+"\n");out("[ENV] package="+g_pkg+" | abi="+coreAbi()+" | images="+std::to_string(Il2cpp::GetImagesFresh().size())+" | gchandle="+(Il2cpp::GcHandleApiResolved()?"OK":"MISSING"));out("[API] Class.fromName | findObjectsFresh | Field | Call.exact/default | Hook | Array | gg");writeText(STATUS(),"RUNNING");int rc=luaL_loadfile(G,f.c_str());if(rc==LUA_OK)rc=lua_pcall(G,0,LUA_MULTRET,0);if(rc!=LUA_OK){const char*e=lua_tostring(G,-1);out(std::string("ERROR | ")+(e?e:"unknown"));lua_pop(G,1);writeText(STATUS(),"ERROR");}else{out("[AZ ScriptCore 0.7] DONE");writeText(STATUS(),"DONE");}lua_settop(G,0);lua_gc(G,LUA_GCCOLLECT,0);}
 void worker(){ensureDir();writeText(STATUS(),"INIT");G=luaL_newstate();if(!G){writeText(STATUS(),"LUA_INIT_FAILED");return;}luaL_openlibs(G);reg(G);writeText(STATUS(),"READY");logf("Lua 5.4 READY | Class Call Hook Array gg");for(;;){if(access(REQ(),F_OK)==0){std::string q=readText(REQ(),512);unlink(REQ());while(!q.empty()&&(q.back()=='\n'||q.back()=='\r'||q.back()==' '||q.back()=='\t'))q.pop_back();run(q);}usleep(100000);}}
 }
 extern "C" void az_lua_worker(){AZLua::worker();}
