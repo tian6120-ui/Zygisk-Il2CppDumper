@@ -1606,6 +1606,248 @@ bool invokeRetainedCallback(int ref, int kind, bool bv, int iv, float fv, const 
     return true;
 }
 
+
+MethodInfo* resolveExactDescriptor(lua_State* L, int idx) {
+    luaL_checktype(L, idx, LUA_TTABLE);
+    idx = lua_absindex(L, idx);
+
+    lua_getfield(L, idx, "declaring");
+    const char* declaring = luaL_checkstring(L, -1);
+    lua_pop(L, 1);
+
+    lua_getfield(L, idx, "name");
+    const char* methodName = luaL_checkstring(L, -1);
+    lua_pop(L, 1);
+
+    std::vector<std::string> params;
+    lua_getfield(L, idx, "params");
+    if (lua_istable(L, -1)) {
+        const lua_Integer n = static_cast<lua_Integer>(lua_rawlen(L, -1));
+        for (lua_Integer i = 1; i <= n; ++i) {
+            lua_rawgeti(L, -1, i);
+            params.emplace_back(luaL_checkstring(L, -1));
+            lua_pop(L, 1);
+        }
+    }
+    lua_pop(L, 1);
+
+    Il2CppClass* klass = Il2cpp::FindClass(declaring);
+    if (!klass) return nullptr;
+    return klass->getMethod(methodName, params);
+}
+
+bool restorePatchByAddress(uintptr_t address) {
+    std::lock_guard<std::mutex> lock(g_patchMutex);
+    auto it = g_returnPatches.find(address);
+    if (it == g_returnPatches.end()) return false;
+
+    auto& rec = it->second;
+    bool ok = false;
+    if (rec.target && !rec.original.empty()) {
+        if (KittyMemory::ProtectAddr(rec.target, rec.original.size(),
+                                     PROT_READ | PROT_WRITE | PROT_EXEC)) {
+            std::memcpy(rec.target, rec.original.data(), rec.original.size());
+            __builtin___clear_cache(static_cast<char*>(rec.target),
+                                    static_cast<char*>(rec.target) + rec.original.size());
+            KittyMemory::ProtectAddr(rec.target, rec.original.size(), PROT_READ | PROT_EXEC);
+            ok = true;
+        }
+    }
+    if (rec.rootedHandle) Il2cpp::GC::FreeHandle(rec.rootedHandle);
+    g_returnPatches.erase(it);
+    return ok;
+}
+
+int l_hook_return_value(lua_State* L) {
+    MethodInfo* method = resolveExactDescriptor(L, 1);
+    if (!method || !method->methodPointer) {
+        return luaL_error(L, "AZ: hook target not found or has no AOT method pointer");
+    }
+
+    const uintptr_t key = reinterpret_cast<uintptr_t>(method->methodPointer);
+    {
+        std::lock_guard<std::mutex> lock(g_patchMutex);
+        if (g_returnPatches.find(key) != g_returnPatches.end()) {
+            return luaL_error(L, "AZ: method already has an AZ return patch");
+        }
+    }
+
+    auto* ret = Il2cpp::GetMethodReturnType(method);
+    if (!ret) return luaL_error(L, "AZ: method return type unavailable");
+
+    Patcher patcher(method);
+    if (!patcher.valid()) return luaL_error(L, "AZ: patcher rejected target");
+
+    uint32_t rootedHandle = 0;
+    asmjit::Error err = asmjit::kErrorOk;
+
+    switch (ret->type) {
+        case IL2CPP_TYPE_VOID:
+            break;
+        case IL2CPP_TYPE_BOOLEAN:
+            err = patcher.movBool(lua_toboolean(L, 2));
+            break;
+        case IL2CPP_TYPE_I1:
+        case IL2CPP_TYPE_I2:
+        case IL2CPP_TYPE_I4:
+            err = patcher.movInt32(static_cast<int32_t>(luaL_checkinteger(L, 2)));
+            break;
+        case IL2CPP_TYPE_U1:
+        case IL2CPP_TYPE_U2:
+        case IL2CPP_TYPE_CHAR:
+        case IL2CPP_TYPE_U4:
+            err = patcher.movUInt32(static_cast<uint32_t>(luaL_checkinteger(L, 2)));
+            break;
+        case IL2CPP_TYPE_I8:
+        case IL2CPP_TYPE_I:
+            err = patcher.movInt64(static_cast<int64_t>(luaL_checkinteger(L, 2)));
+            break;
+        case IL2CPP_TYPE_U8:
+        case IL2CPP_TYPE_U:
+            err = patcher.movUInt64(static_cast<uint64_t>(luaL_checkinteger(L, 2)));
+            break;
+        case IL2CPP_TYPE_R4:
+            err = patcher.movFloat(static_cast<float>(luaL_checknumber(L, 2)));
+            break;
+        case IL2CPP_TYPE_STRING:
+        case IL2CPP_TYPE_CLASS:
+        case IL2CPP_TYPE_OBJECT:
+        case IL2CPP_TYPE_ARRAY:
+        case IL2CPP_TYPE_SZARRAY:
+        case IL2CPP_TYPE_GENERICINST: {
+            Il2CppObject* obj = nullptr;
+            if (!lua_isnil(L, 2)) {
+                if (ret->type == IL2CPP_TYPE_STRING && lua_type(L, 2) == LUA_TSTRING) {
+                    obj = reinterpret_cast<Il2CppObject*>(Il2cpp::NewString(lua_tostring(L, 2)));
+                } else {
+                    auto* inst = static_cast<LuaInstance*>(luaL_testudata(L, 2, MT_INSTANCE));
+                    if (!inst) return luaL_error(L, "AZ: object return requires Instance, string, or nil");
+                    obj = getInstanceObject(inst);
+                    if (!obj) return luaL_error(L, "AZ: return object is no longer alive");
+                }
+            }
+            if (obj) {
+                rootedHandle = Il2cpp::GC::NewHandle(obj);
+                if (!rootedHandle) return luaL_error(L, "AZ: failed to root return object");
+            }
+            err = patcher.movPtr(obj);
+            break;
+        }
+        case IL2CPP_TYPE_R8:
+            return luaL_error(L, "AZ: double return patch is not implemented safely yet");
+        default:
+            return luaL_error(L, "AZ: unsupported return patch type: %s",
+                              Il2cpp::GetTypeName(ret) ? Il2cpp::GetTypeName(ret) : "?");
+    }
+
+    if (err != asmjit::kErrorOk || patcher.ret() != asmjit::kErrorOk) {
+        if (rootedHandle) Il2cpp::GC::FreeHandle(rootedHandle);
+        return luaL_error(L, "AZ: failed to generate return stub");
+    }
+
+    auto original = patcher.patch();
+    if (original.empty()) {
+        if (rootedHandle) Il2cpp::GC::FreeHandle(rootedHandle);
+        return luaL_error(L, "AZ: target method is too small or unsafe to patch");
+    }
+
+    {
+        std::lock_guard<std::mutex> lock(g_patchMutex);
+        g_returnPatches.emplace(key, ReturnPatchRecord{
+            method->methodPointer, std::move(original), rootedHandle
+        });
+    }
+
+    lua_pushinteger(L, static_cast<lua_Integer>(key));
+    return 1;
+}
+
+int l_hook_nop(lua_State* L) {
+    MethodInfo* method = resolveExactDescriptor(L, 1);
+    if (!method || !method->methodPointer) {
+        return luaL_error(L, "AZ: NOP target not found or has no AOT method pointer");
+    }
+    auto* ret = Il2cpp::GetMethodReturnType(method);
+    if (!ret || ret->type != IL2CPP_TYPE_VOID) {
+        return luaL_error(L, "AZ: Hook.nop currently accepts void methods only");
+    }
+    lua_pushnil(L);
+    lua_replace(L, 2);
+    return l_hook_return_value(L);
+}
+
+int l_hook_restore(lua_State* L) {
+    uintptr_t address = 0;
+    if (lua_istable(L, 1)) {
+        MethodInfo* method = resolveExactDescriptor(L, 1);
+        address = method ? reinterpret_cast<uintptr_t>(method->methodPointer) : 0;
+    } else {
+        address = static_cast<uintptr_t>(luaL_checkinteger(L, 1));
+    }
+    lua_pushboolean(L, address && restorePatchByAddress(address));
+    return 1;
+}
+
+int l_hook_restore_all(lua_State* L) {
+    (void)L;
+    std::vector<uintptr_t> keys;
+    {
+        std::lock_guard<std::mutex> lock(g_patchMutex);
+        keys.reserve(g_returnPatches.size());
+        for (const auto& it : g_returnPatches) keys.push_back(it.first);
+    }
+    int restored = 0;
+    for (auto key : keys) if (restorePatchByAddress(key)) ++restored;
+    lua_pushinteger(L, restored);
+    return 1;
+}
+
+int l_trace_enable(lua_State* L) {
+    MethodInfo* method = resolveExactDescriptor(L, 1);
+    if (!method) return luaL_error(L, "AZ: trace method not found");
+    const bool ok = Tool::ToggleHooker(method, 1);
+    lua_pushboolean(L, ok);
+    if (!ok) {
+        lua_pushlstring(L, Tool::g_hookError.c_str(), Tool::g_hookError.size());
+        return 2;
+    }
+    return 1;
+}
+
+int l_trace_disable(lua_State* L) {
+    MethodInfo* method = resolveExactDescriptor(L, 1);
+    if (!method) return luaL_error(L, "AZ: trace method not found");
+    const bool ok = Tool::ToggleHooker(method, 0);
+    lua_pushboolean(L, ok);
+    if (!ok) {
+        lua_pushlstring(L, Tool::g_hookError.c_str(), Tool::g_hookError.size());
+        return 2;
+    }
+    return 1;
+}
+
+void registerHook(lua_State* L) {
+    lua_newtable(L);
+    lua_pushcfunction(L, l_hook_return_value);
+    lua_setfield(L, -2, "returnValue");
+    lua_pushcfunction(L, l_hook_nop);
+    lua_setfield(L, -2, "nop");
+    lua_pushcfunction(L, l_hook_restore);
+    lua_setfield(L, -2, "restore");
+    lua_pushcfunction(L, l_hook_restore_all);
+    lua_setfield(L, -2, "restoreAll");
+    lua_setglobal(L, "Hook");
+}
+
+void registerTrace(lua_State* L) {
+    lua_newtable(L);
+    lua_pushcfunction(L, l_trace_enable);
+    lua_setfield(L, -2, "enable");
+    lua_pushcfunction(L, l_trace_disable);
+    lua_setfield(L, -2, "disable");
+    lua_setglobal(L, "Trace");
+}
+
 int l_get_version(lua_State* L) {
     lua_pushliteral(L, "AZ Tool Core 0.2 / Lua 5.4.7");
     return 1;
@@ -1712,6 +1954,8 @@ bool Init() {
     registerCall(g_L);
     registerUI(g_L);
     registerGG(g_L);
+    registerHook(g_L);
+    registerTrace(g_L);
     registerAZ(g_L);
 
     appendOutput("AZ Lua 5.4.7 initialized");
@@ -1720,6 +1964,7 @@ bool Init() {
     appendOutput("Bindings: Call.exact/default/pointer");
     appendOutput("Bindings: Instance.allocate/box/materialize + Array.create");
     appendOutput("Bindings: retained UI.* + gg alert/toast/visibility/sleep/target-info");
+    appendOutput("Bindings: Hook.returnValue/nop/restore + Trace.enable/disable");
     return true;
 }
 
