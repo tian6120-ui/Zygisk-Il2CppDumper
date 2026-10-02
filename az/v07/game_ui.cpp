@@ -231,8 +231,8 @@ void style(){
  ImGuiStyle&s=ImGui::GetStyle();
  s.WindowRounding=12;s.ChildRounding=9;s.FrameRounding=7;s.PopupRounding=8;s.ScrollbarRounding=8;s.TabRounding=8;
  s.WindowBorderSize=1.0f;s.ChildBorderSize=1.0f;s.FrameBorderSize=0.0f;
- s.WindowPadding=ImVec2(16,14);s.FramePadding=ImVec2(12,8);s.ItemSpacing=ImVec2(10,9);s.ItemInnerSpacing=ImVec2(8,6);
- s.ScrollbarSize=15.0f;s.ScaleAllSizes(1.15f);applyTheme();
+ s.WindowPadding=ImVec2(12,10);s.FramePadding=ImVec2(9,6);s.ItemSpacing=ImVec2(8,6);s.ItemInnerSpacing=ImVec2(6,4);
+ s.ScrollbarSize=13.0f;s.ScaleAllSizes(1.0f);applyTheme();
 }
 void presetTheme(int id){
  if(id==0){g_accent[0]=.58f;g_accent[1]=.04f;g_accent[2]=.08f;g_bg[0]=.045f;g_bg[1]=.05f;g_bg[2]=.06f;}
@@ -242,19 +242,19 @@ void presetTheme(int id){
  applyTheme();saveUiConfig();
 }
 void sectionTitle(const char*title,const char*sub=nullptr){
- ImVec2 p=ImGui::GetCursorScreenPos();float h=sub?46.0f:30.0f;
+ ImVec2 p=ImGui::GetCursorScreenPos();float h=sub?38.0f:26.0f;
  ImDrawList*dl=ImGui::GetWindowDrawList();
  dl->AddRectFilled(ImVec2(p.x,p.y),ImVec2(p.x+5,p.y+h),ImGui::ColorConvertFloat4ToU32(mix3(g_accent,1.15f,1)),3.0f);
  ImGui::SetCursorPosX(ImGui::GetCursorPosX()+14);
  ImGui::TextUnformatted(title);
  if(sub){ImGui::SetCursorPosX(ImGui::GetCursorPosX()+14);ImGui::TextDisabled("%s",sub);}
- ImGui::Dummy(ImVec2(0,4));
+ ImGui::Dummy(ImVec2(0,2));
 }
 void navButton(const char*label,int page,int&state,float w=150.0f){
  bool sel=state==page;
  if(sel){ImGui::PushStyleColor(ImGuiCol_Button,mix3(g_accent,.82f,1));ImGui::PushStyleColor(ImGuiCol_ButtonHovered,mix3(g_accent,.98f,1));}
  else {ImGui::PushStyleColor(ImGuiCol_Button,mix3(g_bg,1.65f,.95f));ImGui::PushStyleColor(ImGuiCol_ButtonHovered,mix3(g_bg,2.10f,.98f));}
- if(ImGui::Button(label,ImVec2(w,42)))state=page;
+ if(ImGui::Button(label,ImVec2(w,34)))state=page;
  ImGui::PopStyleColor(2);
 }
 void region(float x1,float y1,float x2,float y2){std::lock_guard<std::mutex>lk(g_region_mu);g_region[0]=x1;g_region[1]=y1;g_region[2]=x2;g_region[3]=y2;}
@@ -270,14 +270,14 @@ void draw(int w,int h){
  }ImGui::End();
 
  if(g_open){
-  float pw=std::min((float)w-70.0f,std::max(820.0f,w*.72f));
-  float ph=std::min((float)h-54.0f,std::max(620.0f,h*.84f));
+  float pw=std::min((float)w-70.0f,std::max(760.0f,w*.66f));
+  float ph=std::min((float)h-54.0f,std::max(540.0f,h*.76f));
   if(g_center_next){ImGui::SetNextWindowPos(ImVec2(w*.5f,h*.5f),ImGuiCond_Always,ImVec2(.5f,.5f));g_center_next=false;}
   ImGui::SetNextWindowSize(ImVec2(pw,ph),ImGuiCond_Once);
   if(ImGui::Begin(g_language?"AZ ScriptCore · 中文":"AZ ScriptCore",&g_open,ImGuiWindowFlags_NoSavedSettings)){
    auto p=ImGui::GetWindowPos(),s=ImGui::GetWindowSize();x1=std::min(x1,p.x);y1=std::min(y1,p.y);x2=std::max(x2,p.x+s.x);y2=std::max(y2,p.y+s.y);
 
-   ImGui::BeginChild("##topbar",ImVec2(0,64),true,ImGuiWindowFlags_NoScrollbar);
+   ImGui::BeginChild("##topbar",ImVec2(0,48),true,ImGuiWindowFlags_NoScrollbar);
    ImGui::TextUnformatted("AZ ScriptCore");ImGui::SameLine();ImGui::TextDisabled("V7 Path");
    ImGui::TextDisabled("%s",pkg().c_str());
    const char*st=g_status.empty()?"WAITING":g_status.c_str();
@@ -288,28 +288,28 @@ void draw(int w,int h){
    ImGui::EndChild();
 
    ImGui::Dummy(ImVec2(0,4));
-   ImGui::BeginChild("##nav",ImVec2(0,58),true,ImGuiWindowFlags_NoScrollbar);
-   navButton(L("Script","脚本"),0,g_page,160);ImGui::SameLine();
+   ImGui::BeginChild("##nav",ImVec2(0,48),true,ImGuiWindowFlags_NoScrollbar);
+   navButton(L("Script","脚本"),0,g_page,132);ImGui::SameLine();
    bool localSel=g_page==1;
    if(localSel){ImGui::PushStyleColor(ImGuiCol_Button,mix3(g_accent,.82f,1));ImGui::PushStyleColor(ImGuiCol_ButtonHovered,mix3(g_accent,.98f,1));}
    else {ImGui::PushStyleColor(ImGuiCol_Button,mix3(g_bg,1.65f,.95f));ImGui::PushStyleColor(ImGuiCol_ButtonHovered,mix3(g_bg,2.10f,.98f));}
-   if(ImGui::Button(L("Local Scripts","本地脚本"),ImVec2(180,42))){g_page=1;if(g_local_scripts.empty())refreshLocalScripts();}
+   if(ImGui::Button(L("Local Scripts","本地脚本"),ImVec2(156,34))){g_page=1;if(g_local_scripts.empty())refreshLocalScripts();}
    ImGui::PopStyleColor(2);ImGui::SameLine();
-   navButton(L("Theme","主题"),2,g_page,150);
+   navButton(L("Theme","主题"),2,g_page,124);
    ImGui::EndChild();
    ImGui::Dummy(ImVec2(0,5));
 
    if(g_page==0){
-    ImGui::BeginChild("##script_toolbar",ImVec2(0,64),true,ImGuiWindowFlags_NoScrollbar);
-    if(ImGui::Button(L("Add","添加"),ImVec2(120,42)))addClipboardOnly();
+    ImGui::BeginChild("##script_toolbar",ImVec2(0,52),true,ImGuiWindowFlags_NoScrollbar);
+    if(ImGui::Button(L("Add","添加"),ImVec2(96,34)))addClipboardOnly();
     ImGui::SameLine();
-    if(ImGui::Button(L("Paste & Run","粘贴并运行"),ImVec2(175,42))){auto v=clipGet();if(!v.empty()){memset(g_script.data(),0,g_script.size());memcpy(g_script.data(),v.data(),std::min(v.size(),g_script.size()-1));run();}}
-    ImGui::SameLine();if(ImGui::Button(L("Run","运行"),ImVec2(110,42)))run();
-    ImGui::SameLine();if(ImGui::Button(L("Save","保存"),ImVec2(110,42)))save();
-    ImGui::SameLine();if(ImGui::Button(L("Clear","清空"),ImVec2(110,42))){memset(g_script.data(),0,g_script.size());}
+    if(ImGui::Button(L("Paste & Run","粘贴并运行"),ImVec2(150,34))){auto v=clipGet();if(!v.empty()){memset(g_script.data(),0,g_script.size());memcpy(g_script.data(),v.data(),std::min(v.size(),g_script.size()-1));run();}}
+    ImGui::SameLine();if(ImGui::Button(L("Run","运行"),ImVec2(88,34)))run();
+    ImGui::SameLine();if(ImGui::Button(L("Save","保存"),ImVec2(88,34)))save();
+    ImGui::SameLine();if(ImGui::Button(L("Clear","清空"),ImVec2(88,34))){memset(g_script.data(),0,g_script.size());}
     ImGui::EndChild();
 
-    float avail=ImGui::GetContentRegionAvail().y;float editorH=std::max(220.f,avail*.51f);
+    float avail=ImGui::GetContentRegionAvail().y;float editorH=std::max(190.f,avail*.49f);
     ImGui::BeginChild("##editor_card",ImVec2(0,editorH),true);
     char sub[96];snprintf(sub,sizeof(sub),g_language?"UTF-8 · 当前 %zu 字节":"UTF-8 · %zu bytes",strnlen(g_script.data(),g_script.size()));
     sectionTitle(L("Script input","脚本输入"),sub);
@@ -336,7 +336,7 @@ void draw(int w,int h){
     ImGui::TextUnformatted(L("Custom folder","自定义目录"));ImGui::SameLine();ImGui::SetNextItemWidth(-170);ImGui::InputText("##customdir",g_custom_dir,sizeof(g_custom_dir));ImGui::SameLine();
     if(ImGui::Button(L("Refresh","刷新"))){saveUiConfig();refreshLocalScripts();}
     ImGui::TextDisabled("%s",g_local_note.c_str());ImGui::Separator();
-    float listH=std::max(280.f,ImGui::GetContentRegionAvail().y-105.f);
+    float listH=std::max(240.f,ImGui::GetContentRegionAvail().y-92.f);
     ImGui::BeginChild("##local_list",ImVec2(0,listH),true);
     for(size_t i=0;i<g_local_scripts.size();++i){
       bool sel=(int)i==g_local_selected;std::string label=g_local_scripts[i].name+"##"+std::to_string(i);
@@ -345,14 +345,14 @@ void draw(int w,int h){
     ImGui::EndChild();
     if(g_local_selected>=0&&g_local_selected<(int)g_local_scripts.size()){
       const auto&ls=g_local_scripts[g_local_selected];ImGui::TextWrapped("%s: %s",L("Selected","已选择"),ls.path.c_str());
-      if(ImGui::Button(L("Load to editor","加载到编辑器"),ImVec2(180,42))){if(loadScriptPath(ls.path))g_page=0;}
-      ImGui::SameLine();if(ImGui::Button(L("Run directly","直接运行"),ImVec2(160,42))){if(loadScriptPath(ls.path)){run();g_page=0;}}
+      if(ImGui::Button(L("Load to editor","加载到编辑器"),ImVec2(156,34))){if(loadScriptPath(ls.path))g_page=0;}
+      ImGui::SameLine();if(ImGui::Button(L("Run directly","直接运行"),ImVec2(136,34))){if(loadScriptPath(ls.path)){run();g_page=0;}}
     }
     ImGui::EndChild();
    }else{
     ImGui::BeginChild("##theme_card",ImVec2(0,0),true);
     sectionTitle(L("Appearance","外观设置"),L("Colors and opacity are saved automatically.","颜色与透明度自动保存"));
-    ImGui::BeginChild("##theme_general",ImVec2(0,145),true);
+    ImGui::BeginChild("##theme_general",ImVec2(0,118),true);
     ImGui::TextUnformatted(L("Language","界面语言"));ImGui::SameLine();ImGui::SetNextItemWidth(190);
     if(ImGui::BeginCombo("##lang",g_language?"中文":"English")){
       if(ImGui::Selectable("English",g_language==0)){g_language=0;saveUiConfig();}
@@ -364,10 +364,10 @@ void draw(int w,int h){
     ImGui::EndChild();
 
     ImGui::Dummy(ImVec2(0,6));sectionTitle(L("Quick themes","快捷主题"));
-    if(ImGui::Button(L("Dark Red","深红"),ImVec2(130,42)))presetTheme(0);ImGui::SameLine();
-    if(ImGui::Button(L("Blue","蓝色"),ImVec2(130,42)))presetTheme(1);ImGui::SameLine();
-    if(ImGui::Button(L("Green","绿色"),ImVec2(130,42)))presetTheme(2);ImGui::SameLine();
-    if(ImGui::Button(L("Purple","紫色"),ImVec2(130,42)))presetTheme(3);
+    if(ImGui::Button(L("Dark Red","深红"),ImVec2(112,34)))presetTheme(0);ImGui::SameLine();
+    if(ImGui::Button(L("Blue","蓝色"),ImVec2(112,34)))presetTheme(1);ImGui::SameLine();
+    if(ImGui::Button(L("Green","绿色"),ImVec2(112,34)))presetTheme(2);ImGui::SameLine();
+    if(ImGui::Button(L("Purple","紫色"),ImVec2(112,34)))presetTheme(3);
 
     ImGui::Dummy(ImVec2(0,6));sectionTitle(L("Custom colors","自定义颜色"));
     if(ImGui::ColorEdit3(L("Accent","强调色"),g_accent)){applyTheme();saveUiConfig();}
@@ -375,7 +375,7 @@ void draw(int w,int h){
     if(ImGui::ColorEdit3(L("Text","文字色"),g_text)){applyTheme();saveUiConfig();}
     if(ImGui::SliderFloat(L("Window opacity","窗口透明度"),&g_panel_alpha,.25f,1.0f,"%.2f")){applyTheme();saveUiConfig();}
     ImGui::Dummy(ImVec2(0,6));
-    if(ImGui::Button(L("Restore default","恢复默认"),ImVec2(180,42))){g_accent[0]=.58f;g_accent[1]=.04f;g_accent[2]=.08f;g_bg[0]=.045f;g_bg[1]=.05f;g_bg[2]=.06f;g_text[0]=g_text[1]=g_text[2]=.94f;g_panel_alpha=.94f;applyTheme();saveUiConfig();}
+    if(ImGui::Button(L("Restore default","恢复默认"),ImVec2(156,34))){g_accent[0]=.58f;g_accent[1]=.04f;g_accent[2]=.08f;g_bg[0]=.045f;g_bg[1]=.05f;g_bg[2]=.06f;g_text[0]=g_text[1]=g_text[2]=.94f;g_panel_alpha=.94f;applyTheme();saveUiConfig();}
     ImGui::EndChild();
    }
   }ImGui::End();
