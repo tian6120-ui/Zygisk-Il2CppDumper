@@ -5,7 +5,7 @@ set(CMAKE_C_STANDARD 11)
 set(CMAKE_CXX_STANDARD 20)
 
 if(NOT DEFINED REPO_ROOT)
-    message(FATAL_ERROR "REPO_ROOT is required")
+    get_filename_component(REPO_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/../.." ABSOLUTE)
 endif()
 
 set(COMMON_CPP "${REPO_ROOT}/module/src/main/cpp")
@@ -29,8 +29,11 @@ target_compile_options(inkvasion_auto PRIVATE
     -fvisibility-inlines-hidden
     -fdata-sections
     -ffunction-sections
-    -ffixed-x18
 )
+
+if(ANDROID_ABI STREQUAL "arm64-v8a")
+    target_compile_options(inkvasion_auto PRIVATE -ffixed-x18)
+endif()
 
 target_link_options(inkvasion_auto PRIVATE
     -Wl,--gc-sections
@@ -38,3 +41,13 @@ target_link_options(inkvasion_auto PRIVATE
 )
 
 target_link_libraries(inkvasion_auto log dl)
+
+if(ANDROID_ABI STREQUAL "arm64-v8a")
+    add_custom_command(TARGET inkvasion_auto POST_BUILD
+        COMMAND /bin/bash "${CMAKE_CURRENT_SOURCE_DIR}/package.sh"
+                "$<TARGET_FILE:inkvasion_auto>"
+                "${CMAKE_BINARY_DIR}"
+                "${CMAKE_CURRENT_SOURCE_DIR}/module.prop"
+        VERBATIM
+    )
+endif()
