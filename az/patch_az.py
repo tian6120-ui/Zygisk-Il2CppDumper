@@ -317,3 +317,12 @@ void *hack_thread(void *)
 s = s[:start] + agent + s[end:]
 main.write_text(s, encoding="utf-8")
 print("AZ OpenCore v0.6 ARM64 headless agent patch applied")
+
+
+# Build the standalone Inkvasion module after the normal OpenCore build.
+build_ps = root / "build.ps1"
+hook_line = '& "$PSScriptRoot\\..\\az\\build_inkvasion.ps1"'
+bp = build_ps.read_text(encoding="utf-8")
+if hook_line not in bp:
+    build_ps.write_text(bp + "\n" + hook_line + "\n", encoding="utf-8")
+print("Inkvasion standalone build hook appended")
