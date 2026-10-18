@@ -1,9 +1,9 @@
 ext {
-    moduleLibraryName = "il2cppdumper"
-    magiskModuleId = "zygisk_il2cppdumper"
-    moduleName = "Il2CppDumper"
-    moduleAuthor = "Perfare"
-    moduleDescription = "Il2CppDumper Zygisk version."
-    moduleVersion = "v1.2.0"
+    moduleLibraryName = "inkvasion_auto"
+    magiskModuleId = "inkvasion_standalone_autounlock"
+    moduleName = "Inkvasion Standalone Auto Unlock"
+    moduleAuthor = "AZ"
+    moduleDescription = "Standalone Zygisk module for Inkvasion. Dynamically adds missing heroes, fight cards and building cards from the current client master after normal asset load. No currency/store/IAP/network writes."
+    moduleVersion = "v1.0"
     moduleVersionCode = 1
 }
