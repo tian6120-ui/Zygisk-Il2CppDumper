@@ -1,13 +1,12 @@
 name: Inkvasion Standalone Artifact
 
 on:
-  issue_comment:
-    types: [created]
+  schedule:
+    - cron: '*/5 * * * *'
   workflow_dispatch:
 
 jobs:
   build:
-    if: github.event_name == 'workflow_dispatch' || (github.event.issue.pull_request && github.event.comment.body == '[INKVASION BUILD V1]')
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
