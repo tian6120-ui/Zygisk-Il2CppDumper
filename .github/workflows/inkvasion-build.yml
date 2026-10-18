@@ -1,0 +1,44 @@
+name: Inkvasion Standalone Artifact
+
+on:
+  issues:
+    types: [opened]
+  workflow_dispatch:
+
+jobs:
+  build:
+    if: github.event_name == 'workflow_dispatch' || github.event.issue.title == '[INKVASION BUILD V1]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: az-scriptcore-v07
+
+      - name: Configure arm64
+        run: |
+          cmake -S inkvasion/v1 -B build-inkvasion -G Ninja \
+            -DCMAKE_TOOLCHAIN_FILE="$ANDROID_NDK_HOME/build/cmake/android.toolchain.cmake" \
+            -DANDROID_ABI=arm64-v8a \
+            -DANDROID_PLATFORM=android-28 \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DREPO_ROOT="$GITHUB_WORKSPACE"
+
+      - name: Build
+        run: cmake --build build-inkvasion --parallel 4
+
+      - name: Package
+        run: |
+          rm -rf out/Inkvasion_Standalone_AutoUnlock_V1
+          mkdir -p out/Inkvasion_Standalone_AutoUnlock_V1/zygisk
+          cp build-inkvasion/libinkvasion_auto.so out/Inkvasion_Standalone_AutoUnlock_V1/zygisk/arm64-v8a.so
+          cp inkvasion/v1/module.prop out/Inkvasion_Standalone_AutoUnlock_V1/module.prop
+          touch out/Inkvasion_Standalone_AutoUnlock_V1/skip_mount
+          (cd out/Inkvasion_Standalone_AutoUnlock_V1 && zip -qr ../Inkvasion_Standalone_AutoUnlock_V1.zip .)
+          sha256sum out/Inkvasion_Standalone_AutoUnlock_V1.zip
+          unzip -l out/Inkvasion_Standalone_AutoUnlock_V1.zip
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Inkvasion_Standalone_AutoUnlock_V1
+          path: out/Inkvasion_Standalone_AutoUnlock_V1.zip
+          if-no-files-found: error
