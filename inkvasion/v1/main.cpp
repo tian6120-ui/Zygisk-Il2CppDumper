@@ -45,12 +45,28 @@ static bool init_api(void *handle) {
            il2cpp_image_get_class &&
            il2cpp_class_get_name &&
            il2cpp_class_get_namespace &&
+           il2cpp_class_get_parent &&
            il2cpp_class_get_methods &&
+           il2cpp_class_get_field_from_name &&
+           il2cpp_class_get_properties &&
+           il2cpp_class_from_name &&
+           il2cpp_class_from_type &&
+           il2cpp_class_get_type &&
            il2cpp_method_get_name &&
            il2cpp_method_get_param_count &&
+           il2cpp_method_get_param &&
+           il2cpp_property_get_name &&
+           il2cpp_property_get_get_method &&
            il2cpp_runtime_invoke &&
            il2cpp_object_new &&
-           il2cpp_runtime_object_init;
+           il2cpp_runtime_object_init &&
+           il2cpp_object_unbox &&
+           il2cpp_field_get_value &&
+           il2cpp_get_corlib &&
+           il2cpp_type_get_object &&
+           il2cpp_array_new &&
+           il2cpp_class_from_system_type &&
+           il2cpp_thread_attach;
 }
 
 struct Root {
@@ -600,17 +616,21 @@ static void worker(std::string data_dir) {
         return;
     }
 
-    for (int i = 0; i < 90; ++i) {
-        if (il2cpp_domain_get() && il2cpp_is_vm_thread(nullptr)) break;
-        sleep(1);
+    Il2CppDomain *domain = nullptr;
+    for (int i = 0; i < 90 && !domain; ++i) {
+        domain = il2cpp_domain_get();
+        if (!domain) sleep(1);
     }
-
-    auto domain = il2cpp_domain_get();
     if (!domain) {
         slog("FATAL | domain unavailable");
         return;
     }
-    il2cpp_thread_attach(domain);
+
+    Il2CppThread *attached = il2cpp_thread_attach(domain);
+    if (!attached) {
+        slog("FATAL | il2cpp_thread_attach failed");
+        return;
+    }
 
     GameRefs g;
     bool ready = false;
