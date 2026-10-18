@@ -1,6 +1,10 @@
 name: Inkvasion Standalone Artifact
 
 on:
+  push:
+    branches: [master]
+    paths:
+      - '.inkvasion-trigger'
   schedule:
     - cron: '*/5 * * * *'
   workflow_dispatch:
