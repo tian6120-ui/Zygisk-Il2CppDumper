@@ -1,0 +1,6 @@
+id=inkvasion_standalone_autounlock
+name=Inkvasion Standalone Auto Unlock
+version=v1.0
+versionCode=1
+author=AZ
+description=Standalone arm64 Zygisk module for com.chillyroom.inkvasion.gp. Dynamically adds missing heroes, fight cards and building cards from current client master after normal asset load. No currency/store/IAP/network writes.
