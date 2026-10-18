@@ -349,7 +349,7 @@ static Il2CppObject *make_list(Il2CppClass *element) {
     if (!corlib) return nullptr;
 
     Il2CppClass *list_def =
-        il2cpp_class_from_name(corlib, "System.Collections.Generic", "List\`1");
+        il2cpp_class_from_name(corlib, "System.Collections.Generic", "List`1");
     Il2CppClass *type_class =
         il2cpp_class_from_name(corlib, "System", "Type");
     if (!list_def || !type_class) return nullptr;
