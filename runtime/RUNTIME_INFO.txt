@@ -1,0 +1,5 @@
+source=AZ_R8_TOOLS_LIVEINPUT_HF7_ARM64 (1).zip
+runtime_zip_bytes=7222536
+chunk_bytes=1048576
+parts=7
+files=libAZGlass4_arm64.so,embedded_core_r8.so,zygisk/arm64-v8a.so,zygisk/x86_64.so,scripts/AppLabelHelper.dex
