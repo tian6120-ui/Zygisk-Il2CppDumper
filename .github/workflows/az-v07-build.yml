@@ -5,6 +5,7 @@ on:
     paths:
       - 'az/v07/**'
       - 'az/lua_compat.cpp'
+      - 'inkvasion/**'
       - '.github/workflows/az-v07-build.yml'
   workflow_dispatch:
 
@@ -89,4 +90,44 @@ jobs:
             build-${{ matrix.abi }}/libAZCore07.so
             build-${{ matrix.abi }}/libAZHostUI07.so
             build-loader-${{ matrix.abi }}/libAZLoader07.so
+          if-no-files-found: error
+
+  inkvasion:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: az-scriptcore-v07
+
+      - name: Configure Inkvasion standalone arm64
+        run: |
+          cmake -S inkvasion/v1 -B build-inkvasion -G Ninja \
+            -DCMAKE_TOOLCHAIN_FILE="$ANDROID_NDK_HOME/build/cmake/android.toolchain.cmake" \
+            -DANDROID_ABI=arm64-v8a \
+            -DANDROID_PLATFORM=android-28 \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DREPO_ROOT="$GITHUB_WORKSPACE"
+
+      - name: Build Inkvasion standalone
+        run: cmake --build build-inkvasion --parallel 4
+
+      - name: Package module
+        run: |
+          rm -rf out/Inkvasion_Standalone_AutoUnlock_V1
+          mkdir -p out/Inkvasion_Standalone_AutoUnlock_V1/zygisk
+          cp build-inkvasion/libinkvasion_auto.so out/Inkvasion_Standalone_AutoUnlock_V1/zygisk/arm64-v8a.so
+          cp inkvasion/v1/module.prop out/Inkvasion_Standalone_AutoUnlock_V1/module.prop
+          touch out/Inkvasion_Standalone_AutoUnlock_V1/skip_mount
+          (cd out/Inkvasion_Standalone_AutoUnlock_V1 && zip -r ../Inkvasion_Standalone_AutoUnlock_V1.zip .)
+
+      - name: Verify Inkvasion artifact
+        run: |
+          file build-inkvasion/libinkvasion_auto.so
+          sha256sum build-inkvasion/libinkvasion_auto.so
+          unzip -l out/Inkvasion_Standalone_AutoUnlock_V1.zip
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Inkvasion-Standalone-AutoUnlock-V1
+          path: out/Inkvasion_Standalone_AutoUnlock_V1.zip
           if-no-files-found: error
