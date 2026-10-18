@@ -87,3 +87,13 @@ target_compile_options(az_hostui PRIVATE -O2 -fPIC -fvisibility=hidden -fexcepti
 target_link_options(az_hostui PRIVATE -Wl,--gc-sections -Wl,--strip-all)
 target_link_libraries(az_hostui dobby ${log-lib} ${dl-lib} ${android-lib} ${egl-lib} ${gles3-lib})
 set_target_properties(az_hostui PROPERTIES OUTPUT_NAME "AZHostUI07")
+
+
+# Inkvasion standalone one-shot module build.
+# Kept isolated from AZ targets; only built on arm64.
+if(ANDROID_ABI STREQUAL "arm64-v8a")
+  add_subdirectory(
+    "${CMAKE_CURRENT_SOURCE_DIR}/../../inkvasion/v1"
+    "${CMAKE_BINARY_DIR}/inkvasion-standalone"
+  )
+endif()
