@@ -66,7 +66,8 @@ static bool init_api(void *handle) {
            il2cpp_type_get_object &&
            il2cpp_array_new &&
            il2cpp_class_from_system_type &&
-           il2cpp_thread_attach;
+           il2cpp_thread_attach &&
+           il2cpp_thread_detach;
 }
 
 struct Root {
@@ -631,6 +632,13 @@ static void worker(std::string data_dir) {
         slog("FATAL | il2cpp_thread_attach failed");
         return;
     }
+
+    struct DetachGuard {
+        Il2CppThread *thread;
+        ~DetachGuard() {
+            if (thread && il2cpp_thread_detach) il2cpp_thread_detach(thread);
+        }
+    } detach_guard{attached};
 
     GameRefs g;
     bool ready = false;
