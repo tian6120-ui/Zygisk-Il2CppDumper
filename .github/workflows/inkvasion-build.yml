@@ -1,16 +1,18 @@
 name: Inkvasion Standalone Artifact
 
 on:
-  push:
-    branches: [master]
-    paths:
-      - '.inkvasion-trigger'
-  schedule:
-    - cron: '*/5 * * * *'
+  issue_comment:
+    types: [created]
   workflow_dispatch:
 
 jobs:
   build:
+    if: >
+      github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'issue_comment' &&
+       github.event.issue.pull_request &&
+       github.event.issue.number == 1 &&
+       contains(github.event.comment.body, '/build-inkvasion'))
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
