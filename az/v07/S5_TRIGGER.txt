@@ -2,3 +2,4 @@ AZ HF7 SingleCore S5 build trigger
 architecture=V7zuixin-style one payload per ABI
 old_nested_core=removed
 trigger=2
+pr_sync_trigger=1
