@@ -23,6 +23,10 @@
 #include "imgui_internal.h"
 #include "backends/imgui_impl_opengl3.h"
 #include "zh_glyphs.h"
+#include "Menu/ImGui.h"
+#include "Tool/Tool.h"
+#include "Tool/Keyboard.h"
+extern void on_init();
 
 #define AZTAG "AZV7UI"
 #define AZI(...) __android_log_print(ANDROID_LOG_INFO,AZTAG,__VA_ARGS__)
@@ -53,7 +57,7 @@ std::vector<char> g_script(256*1024,0);
 std::string g_output,g_status="WAITING",g_status_name,g_status_message,g_base,g_last,g_req,g_out,g_stat,g_ui_cfg,g_scripts_dir;
 long long g_status_start_ms=0,g_status_elapsed_ms=0;
 double g_poll=0;
-bool g_open=false,g_autoscroll=true,g_center_next=false;
+bool g_open=false,g_autoscroll=true,g_center_next=false,g_local_view=false;
 float g_font_scale=1.25f;
 float g_font_base_px=20.0f;
 int g_font_scale_idx=1;
@@ -334,7 +338,7 @@ void draw(int w,int h){
    auto p=ImGui::GetWindowPos(),s=ImGui::GetWindowSize();x1=std::min(x1,p.x);y1=std::min(y1,p.y);x2=std::max(x2,p.x+s.x);y2=std::max(y2,p.y+s.y);
 
    ImGui::BeginChild("##topbar",ImVec2(0,48),true,ImGuiWindowFlags_NoScrollbar);
-   ImGui::TextUnformatted("AZ ScriptCore");ImGui::SameLine();ImGui::TextDisabled("V7 Path");
+   ImGui::TextUnformatted("AZ HF7");
    ImGui::TextDisabled("%s",pkg().c_str());
    ImVec4 sc=runStateColor();
    ImGui::SameLine();ImGui::TextColored(sc,"  %s: %s",L("Status","状态"),runStateLabel());
@@ -343,25 +347,40 @@ void draw(int w,int h){
    ImGui::Dummy(ImVec2(0,4));
    ImGui::BeginChild("##nav",ImVec2(0,48),true,ImGuiWindowFlags_NoScrollbar);
    navButton(L("Script","脚本"),0,g_page,132);ImGui::SameLine();
-   bool localSel=g_page==1;
-   if(localSel){ImGui::PushStyleColor(ImGuiCol_Button,mix3(g_accent,.82f,1));ImGui::PushStyleColor(ImGuiCol_ButtonHovered,mix3(g_accent,.98f,1));}
-   else {ImGui::PushStyleColor(ImGuiCol_Button,mix3(g_bg,1.65f,.95f));ImGui::PushStyleColor(ImGuiCol_ButtonHovered,mix3(g_bg,2.10f,.98f));}
-   if(ImGui::Button(L("Local Scripts","本地脚本"),ImVec2(156,34))){g_page=1;if(g_local_scripts.empty())refreshLocalScripts();}
-   ImGui::PopStyleColor(2);ImGui::SameLine();
-   navButton(L("Theme","主题"),2,g_page,124);
+   navButton(L("Tool","工具"),1,g_page,132);ImGui::SameLine();
+   navButton(L("Settings","设置"),2,g_page,132);
    ImGui::EndChild();
    ImGui::Dummy(ImVec2(0,5));
 
    if(g_page==0){
     ImGui::BeginChild("##script_toolbar",ImVec2(0,52),true,ImGuiWindowFlags_NoScrollbar);
-    if(ImGui::Button(L("Add","添加"),ImVec2(96,34)))addClipboardOnly();
-    ImGui::SameLine();
-    if(ImGui::Button(L("Paste & Run","粘贴并运行"),ImVec2(150,34))){auto v=clipGet();if(!v.empty()){memset(g_script.data(),0,g_script.size());memcpy(g_script.data(),v.data(),std::min(v.size(),g_script.size()-1));run();}}
+    if(ImGui::Button(L("Paste","粘贴"),ImVec2(96,34))){auto v=clipGet();if(!v.empty()){memset(g_script.data(),0,g_script.size());memcpy(g_script.data(),v.data(),std::min(v.size(),g_script.size()-1));}}
     ImGui::SameLine();if(ImGui::Button(L("Run","运行"),ImVec2(88,34)))run();
-    ImGui::SameLine();if(ImGui::Button(L("Save","保存"),ImVec2(88,34)))save();
     ImGui::SameLine();if(ImGui::Button(L("Clear","清空"),ImVec2(88,34))){memset(g_script.data(),0,g_script.size());}
+    ImGui::SameLine();if(ImGui::Button(L("Save","保存"),ImVec2(88,34)))save();
+    ImGui::SameLine();if(ImGui::Button(L("Local Scripts","本地脚本"),ImVec2(140,34))){g_local_view=true;if(g_local_scripts.empty())refreshLocalScripts();}
     ImGui::EndChild();
     ImGui::Dummy(ImVec2(0,3));
+    if(g_local_view){
+      ImGui::BeginChild("##local_card",ImVec2(0,0),true);
+      if(ImGui::Button(L("Back","返回"),ImVec2(96,34)))g_local_view=false;
+      ImGui::SameLine();if(ImGui::Button(L("Refresh","刷新"),ImVec2(96,34)))refreshLocalScripts();
+      ImGui::Separator();
+      float listH=std::max(240.f,ImGui::GetContentRegionAvail().y-92.f);
+      ImGui::BeginChild("##local_list",ImVec2(0,listH),true);
+      for(size_t i=0;i<g_local_scripts.size();++i){
+        bool sel=(int)i==g_local_selected;std::string label=g_local_scripts[i].name+"##"+std::to_string(i);
+        if(ImGui::Selectable(label.c_str(),sel)){g_local_selected=(int)i;g_local_note=g_local_scripts[i].path;}
+      }
+      ImGui::EndChild();
+      if(g_local_selected>=0&&g_local_selected<(int)g_local_scripts.size()){
+        const auto&ls=g_local_scripts[g_local_selected];
+        if(ImGui::Button(L("Load to editor","加载到编辑器"),ImVec2(156,34))){if(loadScriptPath(ls.path))g_local_view=false;}
+        ImGui::SameLine();if(ImGui::Button(L("Run directly","直接运行"),ImVec2(136,34))){if(loadScriptPath(ls.path)){run();g_local_view=false;}}
+      }
+      ImGui::EndChild();
+      goto script_page_done;
+    }
     drawRunStatusStrip();
 
     float avail=ImGui::GetContentRegionAvail().y;float editorH=std::max(175.f,avail*.47f);
@@ -384,25 +403,13 @@ void draw(int w,int h){
     ImGui::TextUnformatted(g_output.c_str(),g_output.c_str()+g_output.size());
     if(g_autoscroll)ImGui::SetScrollHereY(1);
     ImGui::EndChild();ImGui::EndChild();
+    script_page_done: ;
    }else if(g_page==1){
-    ImGui::BeginChild("##local_card",ImVec2(0,0),true);
-    sectionTitle(L("Local Lua files","本地 Lua 脚本"),L("Choose a file, load it into the editor, or run it directly.","选择脚本后可加载到编辑器或直接运行"));
-    ImGui::TextWrapped("%s: %s",L("Built-in folder","内置目录"),g_scripts_dir.c_str());
-    ImGui::TextUnformatted(L("Custom folder","自定义目录"));ImGui::SameLine();ImGui::SetNextItemWidth(-170);ImGui::InputText("##customdir",g_custom_dir,sizeof(g_custom_dir));ImGui::SameLine();
-    if(ImGui::Button(L("Refresh","刷新"))){saveUiConfig();refreshLocalScripts();}
-    ImGui::TextDisabled("%s",g_local_note.c_str());ImGui::Separator();
-    float listH=std::max(240.f,ImGui::GetContentRegionAvail().y-92.f);
-    ImGui::BeginChild("##local_list",ImVec2(0,listH),true);
-    for(size_t i=0;i<g_local_scripts.size();++i){
-      bool sel=(int)i==g_local_selected;std::string label=g_local_scripts[i].name+"##"+std::to_string(i);
-      if(ImGui::Selectable(label.c_str(),sel)){g_local_selected=(int)i;g_local_note=g_local_scripts[i].path;}
-    }
-    ImGui::EndChild();
-    if(g_local_selected>=0&&g_local_selected<(int)g_local_scripts.size()){
-      const auto&ls=g_local_scripts[g_local_selected];ImGui::TextWrapped("%s: %s",L("Selected","已选择"),ls.path.c_str());
-      if(ImGui::Button(L("Load to editor","加载到编辑器"),ImVec2(156,34))){if(loadScriptPath(ls.path))g_page=0;}
-      ImGui::SameLine();if(ImGui::Button(L("Run directly","直接运行"),ImVec2(136,34))){if(loadScriptPath(ls.path)){run();g_page=0;}}
-    }
+    ImGui::BeginChild("##tool_card",ImVec2(0,0),false);
+    if(g_initState==INIT_PENDING) on_init();
+    if(g_initState==INIT_READY){ Tool::Draw(); Keyboard::Update(); }
+    else if(g_initState==INIT_FAILED) ImGui::TextUnformatted(L("Tool initialization failed","工具初始化失败"));
+    else ImGui::TextUnformatted(L("Waiting for IL2CPP...","等待 IL2CPP..."));
     ImGui::EndChild();
    }else{
     ImGui::BeginChild("##theme_card",ImVec2(0,0),true);
