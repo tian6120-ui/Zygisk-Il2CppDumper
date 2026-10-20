@@ -379,8 +379,7 @@ void draw(int w,int h){
         ImGui::SameLine();if(ImGui::Button(L("Run directly","直接运行"),ImVec2(136,34))){if(loadScriptPath(ls.path)){run();g_local_view=false;}}
       }
       ImGui::EndChild();
-      goto script_page_done;
-    }
+    } else {
     drawRunStatusStrip();
 
     float avail=ImGui::GetContentRegionAvail().y;float editorH=std::max(175.f,avail*.47f);
@@ -403,7 +402,7 @@ void draw(int w,int h){
     ImGui::TextUnformatted(g_output.c_str(),g_output.c_str()+g_output.size());
     if(g_autoscroll)ImGui::SetScrollHereY(1);
     ImGui::EndChild();ImGui::EndChild();
-    script_page_done: ;
+    }
    }else if(g_page==1){
     ImGui::BeginChild("##tool_card",ImVec2(0,0),false);
     if(g_initState==INIT_PENDING) on_init();
