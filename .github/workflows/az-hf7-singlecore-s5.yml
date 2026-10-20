@@ -1,0 +1,80 @@
+name: AZ HF7 SingleCore S5
+on:
+  push:
+    branches: [az-hf7-singlecore-s5]
+    paths:
+      - 'az/v07/**'
+      - 'az/lua_compat.cpp'
+      - '.github/workflows/az-hf7-singlecore-s5.yml'
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        abi: [arm64-v8a, x86_64]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: az-hf7-singlecore-s5
+
+      - uses: actions/checkout@v4
+        with:
+          repository: 2228293026/Il2CppTool
+          ref: main
+          path: thirdparty/Il2CppTool
+          fetch-depth: 1
+
+      - uses: actions/checkout@v4
+        with:
+          repository: fedes1to/Zygisk-ImGui-Menu
+          ref: main
+          path: thirdparty/Zygisk-ImGui-Menu
+          fetch-depth: 1
+
+      - uses: actions/checkout@v4
+        with:
+          repository: lua/lua
+          ref: master
+          path: thirdparty/lua
+          fetch-depth: 1
+
+      - name: Generate Chinese glyph atlas
+        run: |
+          sudo apt-get update -y
+          sudo apt-get install -y fonts-noto-cjk python3-pil
+          python3 az/v07/gen_zh_glyphs.py az/v07/zh_glyphs.h
+
+      - name: Configure
+        run: |
+          cmake -S az/v07 -B build-${{ matrix.abi }} -G Ninja \
+            -DCMAKE_TOOLCHAIN_FILE="$ANDROID_NDK_HOME/build/cmake/android.toolchain.cmake" \
+            -DANDROID_ABI=${{ matrix.abi }} \
+            -DANDROID_PLATFORM=android-28 \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DIL2CPPTOOL_ROOT="$GITHUB_WORKSPACE/thirdparty/Il2CppTool" \
+            -DIMGUI_TEMPLATE_ROOT="$GITHUB_WORKSPACE/thirdparty/Zygisk-ImGui-Menu" \
+            -DLUA_ROOT="$GITHUB_WORKSPACE/thirdparty/lua"
+
+      - name: Build
+        run: cmake --build build-${{ matrix.abi }} --parallel 4
+
+      - name: Verify single core
+        run: |
+          file build-${{ matrix.abi }}/libAZCoreHF7.so
+          readelf -Ws build-${{ matrix.abi }}/libAZCoreHF7.so | grep -E 'JNI_OnLoad|SetTargetActivity'
+          if strings build-${{ matrix.abi }}/libAZCoreHF7.so | grep -q 'az_original_core'; then
+            echo "nested old core marker found"; exit 1
+          fi
+          if strings build-${{ matrix.abi }}/libAZCoreHF7.so | grep -q 'V7 Path'; then
+            echo "old visible shell marker found"; exit 1
+          fi
+          sha256sum build-${{ matrix.abi }}/libAZCoreHF7.so
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: AZ-HF7-S5-${{ matrix.abi }}
+          path: build-${{ matrix.abi }}/libAZCoreHF7.so
+          if-no-files-found: error
