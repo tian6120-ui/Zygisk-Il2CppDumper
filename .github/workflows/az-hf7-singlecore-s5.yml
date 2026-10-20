@@ -2,6 +2,8 @@ name: AZ HF7 SingleCore S5
 on:
   push:
     branches: [az-hf7-singlecore-s5]
+  pull_request:
+    branches: [master]
     paths:
       - 'az/v07/**'
       - 'az/lua_compat.cpp'
