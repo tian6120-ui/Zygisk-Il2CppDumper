@@ -23,10 +23,7 @@
 #include "imgui_internal.h"
 #include "backends/imgui_impl_opengl3.h"
 #include "zh_glyphs.h"
-#include "Menu/ImGui.h"
-#include "Tool/Tool.h"
-#include "Tool/Keyboard.h"
-extern void on_init();
+#include "tool_runtime.h"
 
 #define AZTAG "AZHF7UI"
 #define AZI(...) __android_log_print(ANDROID_LOG_INFO,AZTAG,__VA_ARGS__)
@@ -405,9 +402,9 @@ void draw(int w,int h){
     }
    }else if(g_page==1){
     ImGui::BeginChild("##tool_card",ImVec2(0,0),false);
-    if(g_initState==INIT_PENDING) on_init();
-    if(g_initState==INIT_READY){ Tool::Draw(); Keyboard::Update(); }
-    else if(g_initState==INIT_FAILED) ImGui::TextUnformatted(L("Tool initialization failed","工具初始化失败"));
+    az_tool_tick();
+    if(az_tool_ready()) az_tool_draw();
+    else if(az_tool_failed()) ImGui::TextUnformatted(L("Tool initialization failed","工具初始化失败"));
     else ImGui::TextUnformatted(L("Waiting for IL2CPP...","等待 IL2CPP..."));
     ImGui::EndChild();
    }else{
