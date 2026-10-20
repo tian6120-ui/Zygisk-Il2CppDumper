@@ -28,7 +28,7 @@
 #include "Tool/Keyboard.h"
 extern void on_init();
 
-#define AZTAG "AZV7UI"
+#define AZTAG "AZHF7UI"
 #define AZI(...) __android_log_print(ANDROID_LOG_INFO,AZTAG,__VA_ARGS__)
 #define AZE(...) __android_log_print(ANDROID_LOG_ERROR,AZTAG,__VA_ARGS__)
 
@@ -477,7 +477,7 @@ void* render(void*){
 }
 void startRender(){bool x=false;if(g_render_started.compare_exchange_strong(x,true)){pthread_t t{};if(pthread_create(&t,nullptr,render,nullptr)==0)pthread_detach(t);}}
 
-void JNICALL surfCreated(JNIEnv*e,jclass,jobject surface){ANativeWindow*w=ANativeWindow_fromSurface(e,surface);if(!w)return;{std::lock_guard<std::mutex>lk(g_win_mu);if(g_window)ANativeWindow_release(g_window);g_window=w;}g_w=ANativeWindow_getWidth(w);g_h=ANativeWindow_getHeight(w);g_surface_gen++;startRender();AZI("V7 Surface connected %dx%d",g_w.load(),g_h.load());}
+void JNICALL surfCreated(JNIEnv*e,jclass,jobject surface){ANativeWindow*w=ANativeWindow_fromSurface(e,surface);if(!w)return;{std::lock_guard<std::mutex>lk(g_win_mu);if(g_window)ANativeWindow_release(g_window);g_window=w;}g_w=ANativeWindow_getWidth(w);g_h=ANativeWindow_getHeight(w);g_surface_gen++;startRender();AZI("HF7 Surface connected %dx%d",g_w.load(),g_h.load());}
 void JNICALL surfChanged(JNIEnv*,jclass,jint w,jint h){g_w=w;g_h=h;g_surface_gen++;}
 void JNICALL surfDestroyed(JNIEnv*,jclass){{std::lock_guard<std::mutex>lk(g_win_mu);if(g_window){ANativeWindow_release(g_window);g_window=nullptr;}}g_surface_gen++;}
 jboolean JNICALL touch(JNIEnv*,jclass,jint a,jfloat x,jfloat y){push({0,(int)a,0,x,y,0,false,false,false,false,{}});return JNI_TRUE;}
@@ -498,7 +498,7 @@ bool registerV7(JNIEnv*e){
  {std::lock_guard<std::mutex>lk(g_jni_mu);if(g_overlay_cls)e->DeleteGlobalRef(g_overlay_cls);g_overlay_cls=(jclass)e->NewGlobalRef(oc);g_clip_get=e->GetStaticMethodID(oc,"clipboardGet","()Ljava/lang/String;");g_clip_set=e->GetStaticMethodID(oc,"clipboardSet","(Ljava/lang/String;)V");if(e->ExceptionCheck())e->ExceptionClear();}
  e->DeleteLocalRef(oc);
  jclass hc=e->FindClass("com/mxp/Helper");if(hc){JNINativeMethod hm[]={{(char*)"nativeAddChar",(char*)"(I)V",(void*)addChar},{(char*)"nativeCommitText",(char*)"(Ljava/lang/String;)V",(void*)commit},{(char*)"nativeClearActiveID",(char*)"()V",(void*)clearID},{(char*)"nativeKeyEvent",(char*)"(IZZZZ)V",(void*)key}};e->RegisterNatives(hc,hm,sizeof(hm)/sizeof(hm[0]));if(e->ExceptionCheck())e->ExceptionClear();e->DeleteLocalRef(hc);}
- AZI("V7 Java Overlay natives registered");return true;
+ AZI("HF7 Java Overlay natives registered");return true;
 }
 }
 
@@ -511,7 +511,7 @@ extern "C" void az_ui_set_context(JNIEnv*e,jobject activity){
    g_activity=e->NewGlobalRef(activity);
  }
  if(!registerV7(e)){
-   AZE("V7 Overlay registration failed");
+   AZE("HF7 Overlay registration failed");
    return;
  }
  jclass oc=e->FindClass("com/mxp/OverlaySurface");
